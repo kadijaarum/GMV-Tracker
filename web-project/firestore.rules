@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function myAccountId() {
+      return get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.accountId;
+    }
+    function isAdmin() {
+      return isSignedIn() && myAccountId() == 'admin';
+    }
+
+    // Pemetaan akun login -> accountId toko. Dibuat manual oleh admin lewat
+    // Firestore Console (bukan lewat aplikasi).
+    match /userRoles/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // GMV harian per akun. Akun toko cuma boleh tulis ke folder akunnya sendiri.
+    match /entries/{accountId}/days/{date} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
+    }
+
+    // Target bulanan per akun. Sama: akun toko cuma boleh tulis target akunnya sendiri.
+    match /targets/{accountId}/months/{ym} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
+    }
+
+    // Riwayat revisi — append-only. Akun toko cuma boleh menambah record dengan
+    // accountId = akunnya sendiri, tidak boleh mengubah/menghapus record yang sudah ada.
+    match /revisions/{revId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || request.resource.data.accountId == myAccountId());
+      allow update, delete: if isAdmin();
+    }
+
+    // Config (nama akun, benchmark) dan catatan tahun yang sudah diexport — admin-only write.
+    match /dashboard_storage/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
