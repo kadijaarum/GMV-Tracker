@@ -6,6 +6,20 @@ import { app } from "./firebaseConfig.js";
 
 export const db = getFirestore(app);
 
+// Firestore MENOLAK field bernilai `undefined` di mana pun (termasuk di dalam array/object
+// bersarang) — setDoc() akan throw error. Semua data yang ditulis ke Firestore dilewatkan
+// fungsi ini dulu supaya undefined otomatis jadi null (yang aman disimpan).
+function sanitize(value) {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return value.map(sanitize);
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const out = {};
+    Object.entries(value).forEach(([k, v]) => { out[k] = sanitize(v); });
+    return out;
+  }
+  return value;
+}
+
 // Dipakai untuk data yang tetap satu blok per jenis (config nama akun/benchmark,
 // catatan tahun yang sudah diexport) — keduanya admin-only-write lewat security rules,
 // jadi aman tetap satu dokumen.
@@ -27,7 +41,7 @@ export default function installStorageAdapter() {
     },
     async set(key, value) {
       const ref = doc(db, BLOB_COLLECTION, key);
-      await setDoc(ref, { value, updatedAt: Date.now() });
+      await setDoc(ref, sanitize({ value, updatedAt: Date.now() }));
       return { key, value, shared: true };
     },
     async delete(key) {
@@ -70,7 +84,7 @@ export async function fetchAllEntries(accountIds) {
 
 export async function saveEntryDay(accountId, date, dayData) {
   const ref = doc(db, "entries", accountId, "days", date);
-  await setDoc(ref, dayData);
+  await setDoc(ref, sanitize(dayData));
 }
 
 export async function deleteEntryDay(accountId, date) {
@@ -98,7 +112,7 @@ export async function fetchAllTargets(accountIds) {
 
 export async function saveTargetMonth(accountId, yearMonth, value) {
   const ref = doc(db, "targets", accountId, "months", yearMonth);
-  await setDoc(ref, { value });
+  await setDoc(ref, sanitize({ value }));
 }
 
 /* ============================================================
@@ -116,7 +130,7 @@ export async function fetchAllRevisions() {
 
 export async function addRevisionRecord(record) {
   const ref = doc(collection(db, "revisions"), record.id);
-  await setDoc(ref, record);
+  await setDoc(ref, sanitize(record));
 }
 
 /* ============================================================

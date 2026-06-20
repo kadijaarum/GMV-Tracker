@@ -198,7 +198,7 @@ const FIELD_LABELS = {
 };
 const MONEY_FIELDS = new Set(["gmv", "adSpend", "adRevenue", "video", "videoAffiliate", "livePenjual", "liveAffiliate", "kartuProduk", "spHalamanProduk", "spLivePenjual", "spVideoPenjual", "spAffiliate"]);
 const RATING_FIELDS = new Set(["rating"]);
-const fmtFieldVal = (field, v) => (v === undefined ? "—" : MONEY_FIELDS.has(field) ? fmtRp(v) : RATING_FIELDS.has(field) ? fmtRating(v) : fmtNum(v));
+const fmtFieldVal = (field, v) => (v === undefined || v === null ? "—" : MONEY_FIELDS.has(field) ? fmtRp(v) : RATING_FIELDS.has(field) ? fmtRating(v) : fmtNum(v));
 
 /* ============================================================
    HELPERS — tanggal & angka
@@ -548,7 +548,7 @@ function diffRow(before, after) {
   const keys = Array.from(new Set([...Object.keys(before || {}), ...Object.keys(after || {})]));
   return keys
     .filter((k) => (before?.[k] ?? undefined) !== (after?.[k] ?? undefined))
-    .map((k) => ({ field: k, label: FIELD_LABELS[k] || k, oldVal: before?.[k], newVal: after?.[k] }));
+    .map((k) => ({ field: k, label: FIELD_LABELS[k] || k, oldVal: before?.[k] ?? null, newVal: after?.[k] ?? null }));
 }
 
 /* ============================================================
@@ -977,8 +977,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     try {
       await Promise.all(Object.entries(cleaned).map(([accId, row]) => saveEntryDay(accId, inputDate, row)));
       if (newRevisions.length > 0) {
-        setRevisions((prev) => [...newRevisions, ...prev]);
         await Promise.all(newRevisions.map((r) => addRevisionRecord(r)));
+        setRevisions((prev) => [...newRevisions, ...prev]);
       }
       setSaving(false);
       setSavedFlash(true);
@@ -1044,8 +1044,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     try {
       await Promise.all(writes.map((w) => saveEntryDay(w.accountId, w.date, w.row)));
       if (newRevisions.length > 0) {
-        setRevisions((prev) => [...newRevisions, ...prev]);
         await Promise.all(newRevisions.map((r) => addRevisionRecord(r)));
+        setRevisions((prev) => [...newRevisions, ...prev]);
       }
       setSaving(false);
       setPasteText(""); setPastePreview(null);
@@ -1081,8 +1081,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         timestamp: Date.now(), date: rev.date, accountId: rev.accountId, accountName: rev.accountName,
         before: rev.after, after: rev.before || {}, diffs: diffRow(rev.after, rev.before || {}), isRestore: true,
       };
-      setRevisions((prev) => [restoreRecord, ...prev]);
       await addRevisionRecord(restoreRecord);
+      setRevisions((prev) => [restoreRecord, ...prev]);
       setSaving(false);
       showToast("success", "Data berhasil dipulihkan.");
     } catch (e) {
