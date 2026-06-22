@@ -791,11 +791,22 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
+    // Perbandingan dengan bulan lalu — ambil GMV full-month bulan sebelumnya
+    const [selY, selM] = selectedMonth.split("-").map(Number);
+    const lastMonthYM = ym(new Date(selY, selM - 2, 1));
+    const lastMonthDim = daysInMonthOf(lastMonthYM);
+    const lastMonthDates = Array.from({ length: lastMonthDim }, (_, i) => `${lastMonthYM}-${pad(i + 1)}`);
+    const lastMonthMtd = accounts.reduce((s, a) => s + sumField(entries, lastMonthDates, a.id, "gmv"), 0);
+    const lastMonthTarget = accounts.reduce((s, a) => s + (targets[lastMonthYM]?.[a.id] || 0), 0);
+    const lastMonthPct = lastMonthTarget > 0 ? (lastMonthMtd / lastMonthTarget) * 100 : null;
+    const mtdVsLastMonth = lastMonthMtd > 0 ? ((totalMtd - lastMonthMtd) / lastMonthMtd) * 100 : null;
+
     return {
       perAccount, totalMtd, totalTarget, avgPace, totalProjected, totalStatus, requiredRate,
       todayTotal: hasToday ? todayTotal : null, dDoDTotal, dWoWTotal, chartData, targetPace, dim, elapsed, remaining,
       timeGonePercent, pencapaianPercentOverall, paceDiff,
       pencapaianHariIniTotal, pencapaianKemarinTotal, achievementDiffPtsTotal, achievementTrendTotal,
+      lastMonthMtd, lastMonthTarget, lastMonthPct, lastMonthYM, mtdVsLastMonth,
     };
   }, [accounts, targets, entries, selectedMonth, monthMeta, monthDates]);
 
@@ -1468,6 +1479,31 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 <PointDeltaBadge value={overview.achievementDiffPtsTotal} />
               </div>
             </Card>
+
+            {/* card perbandingan bulan lalu */}
+            <Card accent={PALETTE.plum} className="sm:col-span-2 lg:col-span-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Lalu <span className="normal-case font-normal">({monthLabel(overview.lastMonthYM)})</span></div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(overview.lastMonthMtd)}</span>
+                  <span className="text-xs" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.lastMonthTarget)}</span>
+                </div>
+                {overview.lastMonthPct !== null && (
+                  <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>Pencapaian: <b style={{ color: PALETTE.ink }}>{Math.round(overview.lastMonthPct)}%</b> dari target</div>
+                )}
+              </div>
+              <div className="h-px sm:h-12 sm:w-px w-full" style={{ background: PALETTE.line }} />
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Ini vs Bulan Lalu</div>
+                <div className="flex items-baseline gap-2">
+                  <DeltaBadge value={overview.mtdVsLastMonth} size="text-xl" />
+                  <span className="text-xs" style={{ color: PALETTE.inkSoft }}>{fmtCompactRp(overview.totalMtd)} vs {fmtCompactRp(overview.lastMonthMtd)}</span>
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>
+                  {overview.mtdVsLastMonth === null ? "Belum ada data bulan lalu" : overview.mtdVsLastMonth >= 0 ? "Bulan ini lebih baik dari bulan lalu" : "Bulan ini di bawah bulan lalu"}
+                </div>
+              </div>
+            </Card>
           </div>
 
           {/* leaderboard ranking pencapaian toko */}
@@ -1698,6 +1734,46 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 </div>
                 {savedFlash && <span className="text-xs flex items-center gap-1" style={{ color: PALETTE.teal }}><CheckCircle2 size={13} />Tersimpan</span>}
               </div>
+
+              {/* Ringkasan total GMV dari draft yang sedang diisi — update realtime tiap kali angka berubah */}
+              {(() => {
+                const tiktokAccs = accounts.filter((a) => a.platform === "tiktok");
+                const shopeeAccs = accounts.filter((a) => a.platform === "shopee");
+                const calcGmv = (acc) => {
+                  const row = draft[acc.id] || {};
+                  const fields = sourceFieldsFor(acc.platform);
+                  const anySource = fields.some(([f]) => row[f] !== undefined);
+                  return anySource ? fields.reduce((s, [f]) => s + (row[f] || 0), 0) : (row.gmv || 0);
+                };
+                const totalTiktok = tiktokAccs.reduce((s, a) => s + calcGmv(a), 0);
+                const totalShopee = shopeeAccs.reduce((s, a) => s + calcGmv(a), 0);
+                const totalAll = totalTiktok + totalShopee;
+                const hasAnyData = accounts.some((a) => {
+                  const row = draft[a.id] || {};
+                  const fields = sourceFieldsFor(a.platform);
+                  return fields.some(([f]) => row[f] !== undefined) || row.gmv !== undefined;
+                });
+                if (!hasAnyData) return null;
+                return (
+                  <div className="flex flex-wrap gap-3 mb-3 p-3 rounded-xl" style={{ background: PALETTE.panelAlt }}>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: PALETTE.inkSoft }}>Total Semua Toko</div>
+                      <div className="text-lg font-extrabold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtRp(totalAll)}</div>
+                    </div>
+                    <div className="w-px" style={{ background: PALETTE.line }} />
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: PALETTE.inkSoft }}>Total TikTok Shop (6 toko)</div>
+                      <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: PALETTE.plum }}>{fmtRp(totalTiktok)}</div>
+                    </div>
+                    <div className="w-px" style={{ background: PALETTE.line }} />
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide mb-0.5" style={{ color: PALETTE.inkSoft }}>Shopee</div>
+                      <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: PALETTE.coral }}>{fmtRp(totalShopee)}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>Isi breakdown sumber GMV di "Detail" — total dihitung otomatis (TikTok Shop dan Shopee punya kategori sumber yang berbeda). Kosongkan kalau belum ada datanya hari ini — bisa dilengkapi nanti.</div>
               <div className="space-y-2">
                 {accounts.map((acc) => {
