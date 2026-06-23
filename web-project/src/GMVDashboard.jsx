@@ -622,6 +622,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
   const [selectedMonth, setSelectedMonth] = useState(todayYM());
+  const [periodMode, setPeriodMode] = useState("month"); // "month" | "day"
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+
+  // viewDates: daftar tanggal yang dipakai oleh SEMUA useMemo (overview, sourceBreakdown, dll).
+  // Mode "month" = semua hari di selectedMonth (seperti sebelumnya).
+  // Mode "day"   = cuma satu tanggal (selectedDate), dan selectedMonth ikut disesuaikan.
 
   const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
   const [benchmarks, setBenchmarks] = useState({ targetROAS: 0, targetCR: 0 });
@@ -712,6 +718,19 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     [selectedMonth, monthMeta.elapsed]
   );
 
+  // viewDates = tanggal-tanggal yang dipakai oleh overview/sourceBreakdown/adPerformance.
+  // Ini satu-satunya hal yang berubah antara mode bulan vs hari — useMemo lain tidak perlu diubah.
+  const viewDates = useMemo(
+    () => periodMode === "day" ? [selectedDate] : monthDates,
+    [periodMode, selectedDate, monthDates]
+  );
+
+  // selectedMonth ikut berubah kalau mode hari (supaya bulan yang ditampilkan tetap sesuai)
+  const effectiveMonth = periodMode === "day" ? selectedDate.slice(0, 7) : selectedMonth;
+  const periodLabel = periodMode === "day"
+    ? new Date(selectedDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : monthLabel(selectedMonth);
+
   const overview = useMemo(() => {
     const { dim, elapsed, remaining, isPast, isCurrent } = monthMeta;
     const monthTargets = targets[selectedMonth] || {};
@@ -726,7 +745,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
     const perAccount = accounts.map((acc) => {
       const target = monthTargets[acc.id] || 0;
-      const mtd = sumField(entries, monthDates, acc.id, "gmv");
+      const mtd = sumField(entries, viewDates, acc.id, "gmv");
       const pace = elapsed > 0 ? mtd / elapsed : 0;
       const projected = pace * dim;
       let status;
@@ -782,7 +801,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     const paceDiff = pencapaianPercentOverall !== null ? pencapaianPercentOverall - timeGonePercent : null;
 
     const targetPace = totalTarget > 0 ? totalTarget / dim : 0;
-    const chartData = monthDates.map((date) => {
+    const chartData = viewDates.map((date) => {
       const d = new Date(date);
       const row = { date, day: d.getDate(), isTwin: isTwinDate(date), isPayday: isPaydayWindow(date), targetPace };
       let total = 0;
@@ -791,14 +810,23 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
-    // Perbandingan dengan bulan lalu — ambil GMV full-month bulan sebelumnya
+    // Perbandingan dengan periode sebelumnya: mode bulan = bulan lalu, mode hari = hari sebelumnya
     const [selY, selM] = selectedMonth.split("-").map(Number);
     const lastMonthYM = ym(new Date(selY, selM - 2, 1));
-    const lastMonthDim = daysInMonthOf(lastMonthYM);
-    const lastMonthDates = Array.from({ length: lastMonthDim }, (_, i) => `${lastMonthYM}-${pad(i + 1)}`);
-    const lastMonthMtd = accounts.reduce((s, a) => s + sumField(entries, lastMonthDates, a.id, "gmv"), 0);
-    const lastMonthTarget = accounts.reduce((s, a) => s + (targets[lastMonthYM]?.[a.id] || 0), 0);
-    const lastMonthPct = lastMonthTarget > 0 ? (lastMonthMtd / lastMonthTarget) * 100 : null;
+    let lastMonthDates, lastMonthMtd, lastMonthTarget, lastMonthPct;
+    if (periodMode === "day") {
+      const prevDate = ymd(addDays(new Date(viewDates[0]), -1));
+      lastMonthDates = [prevDate];
+      lastMonthMtd = accounts.reduce((s, a) => s + (entries[prevDate]?.[a.id]?.gmv || 0), 0);
+      lastMonthTarget = 0;
+      lastMonthPct = null;
+    } else {
+      const lastMonthDim = daysInMonthOf(lastMonthYM);
+      lastMonthDates = Array.from({ length: lastMonthDim }, (_, i) => `${lastMonthYM}-${pad(i + 1)}`);
+      lastMonthMtd = accounts.reduce((s, a) => s + sumField(entries, lastMonthDates, a.id, "gmv"), 0);
+      lastMonthTarget = accounts.reduce((s, a) => s + (targets[lastMonthYM]?.[a.id] || 0), 0);
+      lastMonthPct = lastMonthTarget > 0 ? (lastMonthMtd / lastMonthTarget) * 100 : null;
+    }
     const mtdVsLastMonth = lastMonthMtd > 0 ? ((totalMtd - lastMonthMtd) / lastMonthMtd) * 100 : null;
 
     return {
@@ -808,7 +836,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       pencapaianHariIniTotal, pencapaianKemarinTotal, achievementDiffPtsTotal, achievementTrendTotal,
       lastMonthMtd, lastMonthTarget, lastMonthPct, lastMonthYM, mtdVsLastMonth,
     };
-  }, [accounts, targets, entries, selectedMonth, monthMeta, monthDates]);
+  }, [accounts, targets, entries, selectedMonth, monthMeta, viewDates, periodMode]);
 
   const insights = useMemo(() => combineInsights(accounts, targets, entries, benchmarks), [accounts, targets, entries, benchmarks]);
 
@@ -825,8 +853,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, [overview.perAccount]);
 
   const sourceBreakdown = useMemo(() => {
-    const dim = daysInMonthOf(selectedMonth);
-    const allDatesInMonth = Array.from({ length: dim }, (_, i) => `${selectedMonth}-${pad(i + 1)}`);
+    const allDatesInMonth = viewDates;
     const tiktokAccounts = accounts.filter((a) => a.platform === "tiktok");
     const shopeeAccounts = accounts.filter((a) => a.platform === "shopee");
 
@@ -862,8 +889,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, [accounts, entries, selectedMonth]);
 
   const adPerformance = useMemo(() => {
-    const dim = daysInMonthOf(selectedMonth);
-    const allDatesInMonth = Array.from({ length: dim }, (_, i) => `${selectedMonth}-${pad(i + 1)}`);
+    const allDatesInMonth = viewDates;
 
     const perAccount = accounts.map((acc) => {
       const spend = sumField(entries, allDatesInMonth, acc.id, "adSpend");
@@ -902,7 +928,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     });
 
     return { perAccount, totalSpend, totalRevenue, totalOrders, overallRoas, overallCpa, totalDaysWithAdData, chartData, dim };
-  }, [accounts, entries, selectedMonth]);
+  }, [accounts, entries, viewDates, periodMode]);
 
   const adRanking = useMemo(() => {
     return [...adPerformance.perAccount].sort((a, b) => {
@@ -1397,14 +1423,41 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold mb-0.5" style={{ color: PALETTE.brand }}>Console Performa Toko</div>
           <h1 className="text-xl sm:text-2xl font-extrabold" style={{ fontFamily: "'Sora', sans-serif", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>GMV Tracker — 6 TikTok Shop + Shopee</h1>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap justify-end">
           {saving && <span className="text-xs flex items-center gap-1" style={{ color: PALETTE.inkSoft }}><Loader2 size={12} className="animate-spin" />Menyimpan…</span>}
-          <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}
-            className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }}>
-            {monthOptions.map((m) => (
-              <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>
-            ))}
-          </select>
+
+          {/* toggle mode periode — cuma relevan untuk tab Ringkasan dan Sumber GMV */}
+          {(tab === "overview" || tab === "sumber" || tab === "iklan") && (
+            <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
+              {[["month", "Bulanan"], ["day", "Harian"]].map(([mode, label]) => (
+                <button key={mode} onClick={() => {
+                  setPeriodMode(mode);
+                  if (mode === "day") {
+                    setSelectedDate(todayStr());
+                    setSelectedMonth(todayStr().slice(0, 7));
+                  }
+                }}
+                  className="text-xs px-3 py-1.5 font-semibold transition-all"
+                  style={{ background: periodMode === mode ? `linear-gradient(135deg, ${PALETTE.brand}, ${PALETTE.brand2})` : PALETTE.panel, color: periodMode === mode ? "#fff" : PALETTE.inkSoft }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* selector periode: month picker atau date picker sesuai mode */}
+          {periodMode === "month" || !(tab === "overview" || tab === "sumber" || tab === "iklan") ? (
+            <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}
+              className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }}>
+              {monthOptions.map((m) => (
+                <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>
+              ))}
+            </select>
+          ) : (
+            <input type="date" value={selectedDate}
+              onChange={(e) => { setSelectedDate(e.target.value); setSelectedMonth(e.target.value.slice(0, 7)); }}
+              className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
+          )}
         </div>
       </div>
 
@@ -1426,7 +1479,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         <div className="space-y-5">
           {overview.totalTarget === 0 && (
             <Card><div className="flex items-center gap-2 text-sm" style={{ color: PALETTE.inkSoft }}>
-              <Info size={16} />Belum ada target yang diset untuk {monthLabel(selectedMonth)}. Atur di tab <b className="mx-1">Target & Akun</b> agar progress & status bisa dihitung.
+              <Info size={16} />Belum ada target yang diset untuk {periodLabel}. Atur di tab <b className="mx-1">Target & Akun</b> agar progress & status bisa dihitung.
             </div></Card>
           )}
 
@@ -1437,11 +1490,13 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               <div className="text-2xl sm:text-3xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(overview.totalMtd)}</div>
               <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.totalTarget)}</div>
             </Card>
-            <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
-              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Time Gone</div>
-              <div className="text-2xl font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(overview.timeGonePercent)}%</div>
-              <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{monthMeta.elapsed} dari {monthMeta.dim} hari berjalan</div>
-            </Card>
+            {periodMode === "month" && (
+              <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Time Gone</div>
+                <div className="text-2xl font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(overview.timeGonePercent)}%</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{monthMeta.elapsed} dari {monthMeta.dim} hari berjalan</div>
+              </Card>
+            )}
             <Card accent={STATUS_META[overview.totalStatus]?.color} className="flex flex-col items-center justify-center text-center">
               <Dial percent={overview.pencapaianPercentOverall} color={STATUS_META[overview.totalStatus]?.color} label="Tercapai dari Target" />
               {overview.paceDiff !== null && (
@@ -1480,27 +1535,32 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               </div>
             </Card>
 
-            {/* card perbandingan bulan lalu */}
+            {/* card perbandingan bulan lalu / hari sebelumnya */}
             <Card accent={PALETTE.plum} className="sm:col-span-2 lg:col-span-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
               <div className="flex-1">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Lalu <span className="normal-case font-normal">({monthLabel(overview.lastMonthYM)})</span></div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
+                  {periodMode === "day" ? "GMV Hari Sebelumnya" : "GMV Bulan Lalu"}{" "}
+                  <span className="normal-case font-normal">({monthLabel(overview.lastMonthYM)})</span>
+                </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(overview.lastMonthMtd)}</span>
-                  <span className="text-xs" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.lastMonthTarget)}</span>
+                  {periodMode === "month" && <span className="text-xs" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.lastMonthTarget)}</span>}
                 </div>
-                {overview.lastMonthPct !== null && (
+                {overview.lastMonthPct !== null && periodMode === "month" && (
                   <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>Pencapaian: <b style={{ color: PALETTE.ink }}>{Math.round(overview.lastMonthPct)}%</b> dari target</div>
                 )}
               </div>
               <div className="h-px sm:h-12 sm:w-px w-full" style={{ background: PALETTE.line }} />
               <div className="flex-1">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Ini vs Bulan Lalu</div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
+                  {periodMode === "day" ? "GMV Hari Ini vs Hari Sebelumnya" : "GMV Bulan Ini vs Bulan Lalu"}
+                </div>
                 <div className="flex items-baseline gap-2">
                   <DeltaBadge value={overview.mtdVsLastMonth} size="text-xl" />
                   <span className="text-xs" style={{ color: PALETTE.inkSoft }}>{fmtCompactRp(overview.totalMtd)} vs {fmtCompactRp(overview.lastMonthMtd)}</span>
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>
-                  {overview.mtdVsLastMonth === null ? "Belum ada data bulan lalu" : overview.mtdVsLastMonth >= 0 ? "Bulan ini lebih baik dari bulan lalu" : "Bulan ini di bawah bulan lalu"}
+                  {overview.mtdVsLastMonth === null ? `Belum ada data ${periodMode === "day" ? "hari sebelumnya" : "bulan lalu"}` : overview.mtdVsLastMonth >= 0 ? "Lebih baik dari periode sebelumnya" : "Di bawah periode sebelumnya"}
                 </div>
               </div>
             </Card>
@@ -1508,7 +1568,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* leaderboard ranking pencapaian toko */}
           <Card>
-            <SectionTitle eyebrow={`${monthLabel(selectedMonth)} \u2022 Urut % Target`} title="Ranking Pencapaian Toko" />
+            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target`} title="Ranking Pencapaian Toko" />
             <div className="space-y-2.5">
               {ranking.map((acc, idx) => {
                 const [bandFrom, bandTo] = rankBandColors(idx);
@@ -1655,9 +1715,10 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </div>
           </Card>
 
-          {/* trend chart */}
+          {/* trend chart — hanya mode bulanan */}
+          {periodMode === "month" && (
           <Card>
-            <SectionTitle eyebrow={monthLabel(selectedMonth)} title="Tren GMV Harian" />
+            <SectionTitle eyebrow={periodLabel} title="Tren GMV Harian" />
             <div style={{ height: 300 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={overview.chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
@@ -1680,6 +1741,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               <span>Klik nama di legend untuk tampilkan/sembunyikan garis</span>
             </div>
           </Card>
+          )}
 
           {/* insights */}
           <Card>
@@ -1943,7 +2005,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       {tab === "sumber" && (
         <div className="space-y-5">
           <Card>
-            <SectionTitle eyebrow={monthLabel(selectedMonth)} title="Sumber GMV — Live, Video & Kartu Produk" />
+            <SectionTitle eyebrow={periodLabel} title="Sumber GMV — Live, Video & Kartu Produk" />
             <div className="text-xs" style={{ color: PALETTE.inkSoft }}>
               TikTok Shop dan Shopee punya kategori sumber GMV yang berbeda, jadi ditampilkan terpisah: TikTok Shop di bawah (gabungan & per toko), Shopee di bagian paling bawah dengan kategorinya sendiri (GMV Halaman Produk, Live Penjual, Video Penjual, Affiliate).
             </div>
@@ -2076,14 +2138,14 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       {tab === "iklan" && (
         <div className="space-y-5">
           <Card>
-            <SectionTitle eyebrow={monthLabel(selectedMonth)} title="Performa Iklan — ROAS & CPA" />
+            <SectionTitle eyebrow={periodLabel} title="Performa Iklan — ROAS & CPA" />
             <div className="text-xs" style={{ color: PALETTE.inkSoft }}>
               ROAS = Ad Revenue ÷ Ad Spend. CPA = Ad Spend ÷ Orders (estimasi — Orders di sini total order harian, bukan order yang murni teratribusi ke iklan, karena datanya tidak dipisah sebegitu detail). Dihitung dari field Ad Spend/Ad Revenue/Orders opsional yang sudah kamu isi di Form Harian.
             </div>
             {adPerformance.totalDaysWithAdData === 0 && (
               <div className="flex items-start gap-2 mt-3 p-2.5 rounded-lg text-xs" style={{ background: PALETTE.ochreSoft, color: PALETTE.ochreDeep }}>
                 <Info size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-                <span>Belum ada data Ad Spend yang diisi untuk {monthLabel(selectedMonth)}. Isi field "Ad Spend (Rp)" dan "Ad Revenue (Rp)" di Form Harian (bagian Detail → Metrik Lain) supaya tab ini terisi.</span>
+                <span>Belum ada data Ad Spend yang diisi untuk {periodLabel}. Isi field "Ad Spend (Rp)" dan "Ad Revenue (Rp)" di Form Harian (bagian Detail → Metrik Lain) supaya tab ini terisi.</span>
               </div>
             )}
           </Card>
@@ -2113,7 +2175,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* leaderboard ROAS */}
           <Card>
-            <SectionTitle eyebrow={`${monthLabel(selectedMonth)} \u2022 Urut ROAS`} title="Ranking ROAS Toko" />
+            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut ROAS`} title="Ranking ROAS Toko" />
             <div className="space-y-2.5">
               {adRanking.map((acc, idx) => {
                 const [bandFrom, bandTo] = rankBandColors(idx);
@@ -2145,7 +2207,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* trend ROAS */}
           <Card>
-            <SectionTitle eyebrow={monthLabel(selectedMonth)} title="Tren ROAS Harian" />
+            <SectionTitle eyebrow={periodLabel} title="Tren ROAS Harian" />
             <div style={{ height: 280 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={adPerformance.chartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
@@ -2225,7 +2287,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           )}
 
           <Card>
-            <SectionTitle eyebrow={monthLabel(selectedMonth)} title="Target GMV Bulanan" right={
+            <SectionTitle eyebrow={periodLabel} title="Target GMV Bulanan" right={
               isAdmin && <button onClick={copyFromLastMonth} className="text-xs flex items-center gap-1 px-2.5 py-1.5 rounded border" style={{ borderColor: PALETTE.line, color: PALETTE.inkSoft }}><Copy size={12} />Salin dari bulan lalu</button>
             } />
             {!isAdmin && <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>Target semua toko kelihatan di sini, tapi kamu cuma bisa ubah target tokomu sendiri.</div>}
