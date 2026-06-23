@@ -885,8 +885,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return { ...acc, sums, breakdownTotal, gmvRecorded, daysWithBreakdown, daysGmvOnly };
     });
 
-    return { perAccount, combined, combinedBreakdownTotal, combinedGmvRecorded, totalDaysGmvOnly, shopeeAccounts, shopeeTotal, perShopee, dim };
-  }, [accounts, entries, selectedMonth]);
+    return { perAccount, combined, combinedBreakdownTotal, combinedGmvRecorded, totalDaysGmvOnly, shopeeAccounts, shopeeTotal, perShopee };
+  }, [accounts, entries, viewDates, periodMode]);
 
   const adPerformance = useMemo(() => {
     const allDatesInMonth = viewDates;
@@ -927,7 +927,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
-    return { perAccount, totalSpend, totalRevenue, totalOrders, overallRoas, overallCpa, totalDaysWithAdData, chartData, dim };
+    return { perAccount, totalSpend, totalRevenue, totalOrders, overallRoas, overallCpa, totalDaysWithAdData, chartData };
   }, [accounts, entries, viewDates, periodMode]);
 
   const adRanking = useMemo(() => {
