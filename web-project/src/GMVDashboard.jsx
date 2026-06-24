@@ -829,12 +829,19 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     }
     const mtdVsLastMonth = lastMonthMtd > 0 ? ((totalMtd - lastMonthMtd) / lastMonthMtd) * 100 : null;
 
+    // Total orders periode ini vs periode lalu
+    const totalOrders = accounts.reduce((s, a) => s + sumField(entries, viewDates, a.id, "orders"), 0);
+    const lastMonthOrders = accounts.reduce((s, a) => s + sumField(entries, lastMonthDates, a.id, "orders"), 0);
+    const ordersVsLast = lastMonthOrders > 0 ? ((totalOrders - lastMonthOrders) / lastMonthOrders) * 100 : null;
+    const hasOrdersData = totalOrders > 0 || lastMonthOrders > 0;
+
     return {
       perAccount, totalMtd, totalTarget, avgPace, totalProjected, totalStatus, requiredRate,
       todayTotal: hasToday ? todayTotal : null, dDoDTotal, dWoWTotal, chartData, targetPace, dim, elapsed, remaining,
       timeGonePercent, pencapaianPercentOverall, paceDiff,
       pencapaianHariIniTotal, pencapaianKemarinTotal, achievementDiffPtsTotal, achievementTrendTotal,
       lastMonthMtd, lastMonthTarget, lastMonthPct, lastMonthYM, mtdVsLastMonth,
+      totalOrders, lastMonthOrders, ordersVsLast, hasOrdersData,
     };
   }, [accounts, targets, entries, selectedMonth, monthMeta, viewDates, periodMode]);
 
@@ -1562,6 +1569,27 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>
                   {overview.mtdVsLastMonth === null ? `Belum ada data ${periodMode === "day" ? "hari sebelumnya" : "bulan lalu"}` : overview.mtdVsLastMonth >= 0 ? "Lebih baik dari periode sebelumnya" : "Di bawah periode sebelumnya"}
                 </div>
+              </div>
+              <div className="h-px sm:h-12 sm:w-px w-full" style={{ background: PALETTE.line }} />
+              <div className="flex-1">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
+                  Total Orderan {periodMode === "day" ? "Hari Ini" : "Bulan Ini"}
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                    {overview.hasOrdersData ? fmtNum(overview.totalOrders) : "—"}
+                  </span>
+                  <span className="text-xs" style={{ color: PALETTE.inkSoft }}>order</span>
+                </div>
+                {overview.hasOrdersData && (
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs" style={{ color: PALETTE.inkSoft }}>vs {periodMode === "day" ? "kemarin" : "bulan lalu"} ({fmtNum(overview.lastMonthOrders)}):</span>
+                    <DeltaBadge value={overview.ordersVsLast} size="text-xs" />
+                  </div>
+                )}
+                {!overview.hasOrdersData && (
+                  <div className="text-xs mt-0.5" style={{ color: PALETTE.inkFaint }}>Isi field "Orders" di Form Harian</div>
+                )}
               </div>
             </Card>
           </div>
