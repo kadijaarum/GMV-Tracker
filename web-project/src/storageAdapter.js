@@ -134,6 +134,34 @@ export async function addRevisionRecord(record) {
 }
 
 /* ============================================================
+   LIVE SESSIONS — liveSessions/{accountId}/sessions/{sessionId}
+   Dipecah per-akun (sama seperti entries) supaya security rules bisa
+   menegakkan batasan akses per toko. Beda dari entries: satu tanggal
+   bisa punya BANYAK sesi live (host beda-beda, jam beda-beda), jadi
+   sessionId di-generate sendiri (bukan dikunci ke tanggal).
+   ============================================================ */
+
+export async function fetchAllLiveSessions(accountIds) {
+  const all = [];
+  await Promise.all(accountIds.map(async (accountId) => {
+    const col = collection(db, "liveSessions", accountId, "sessions");
+    const snap = await getDocs(col);
+    snap.forEach((d) => { all.push({ id: d.id, accountId, ...d.data() }); });
+  }));
+  return all;
+}
+
+export async function saveLiveSession(accountId, sessionId, sessionData) {
+  const ref = doc(db, "liveSessions", accountId, "sessions", sessionId);
+  await setDoc(ref, sanitize(sessionData));
+}
+
+export async function deleteLiveSession(accountId, sessionId) {
+  const ref = doc(db, "liveSessions", accountId, "sessions", sessionId);
+  await deleteDoc(ref);
+}
+
+/* ============================================================
    ROLE — userRoles/{uid} → { accountId: "tt1" | ... | "admin" }
    Dokumen ini dibuat MANUAL oleh admin lewat Firestore Console
    (bukan lewat aplikasi), jadi tidak ada masalah ayam-telur soal siapa

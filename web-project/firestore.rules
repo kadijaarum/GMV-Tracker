@@ -31,6 +31,13 @@ service cloud.firestore {
       allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
     }
 
+    // Sesi Live harian per akun (host, jam mulai/selesai, orders, GMV, viewers, dll).
+    // Sama pola dengan entries: akun toko cuma boleh tulis ke folder akunnya sendiri.
+    match /liveSessions/{accountId}/sessions/{sessionId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
+    }
+
     // Riwayat revisi — append-only. Akun toko cuma boleh menambah record dengan
     // accountId = akunnya sendiri, tidak boleh mengubah/menghapus record yang sudah ada.
     match /revisions/{revId} {

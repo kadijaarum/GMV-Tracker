@@ -7,9 +7,10 @@ import {
   ArrowUp, ArrowDown, Minus, AlertTriangle, CheckCircle2, Info,
   ClipboardPaste, ChevronDown, ChevronRight, Calendar, Trash2, Copy,
   Loader2, ShoppingBag, Music2, PlusCircle, FileSpreadsheet, Download, XCircle, Trophy, Medal,
+  Radio, Eye, Clock,
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord } from "./storageAdapter.js";
+import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord, fetchAllLiveSessions, saveLiveSession, deleteLiveSession } from "./storageAdapter.js";
 
 /* ============================================================
    TOKENS — palet & tipografi
@@ -78,6 +79,12 @@ const SOURCE_FIELD_META = {
 };
 
 const ACCOUNT_COLORS = ["#7C3AED", "#EC4899", "#F59E0B", "#10B981", "#06B6D4", "#F43F5E", "#6366F1"];
+
+// Identitas visual khusus Live Tracker — sengaja beda dari brand utama (violet/fuchsia)
+// supaya orang yang isi data langsung sadar ini bukan form Input Data GMV biasa.
+const LIVE_ACCENT = "#E11D48"; // rose
+const LIVE_ACCENT_DEEP = "#9F1239";
+const LIVE_ACCENT_SOFT = "#FFE4E9";
 
 // Gradient band untuk leaderboard ranking pencapaian toko — rank 1/2/3 dapat warna medali,
 // sisanya cycle lewat palet vivid supaya tetap ramai & menyenangkan.
@@ -568,6 +575,21 @@ function matchAccount(input, accounts) {
   return accounts.find((a) => norm(a.name) === n) || accounts.find((a) => norm(a.id) === n)
     || accounts.find((a) => norm(a.name).includes(n) || n.includes(norm(a.name)));
 }
+
+// Hitung durasi live (jam, desimal) dari jam mulai & selesai berformat "HH:MM".
+// Menangani kasus live yang lewat tengah malam (misal mulai 23:30, selesai 01:00 ->
+// dianggap selesai di hari berikutnya, bukan durasi negatif).
+function calcLiveHours(startTime, endTime) {
+  if (!startTime || !endTime) return null;
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  if ([sh, sm, eh, em].some((v) => isNaN(v))) return null;
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins < 0) mins += 24 * 60; // lewat tengah malam
+  return mins / 60;
+}
+const fmtHours = (h) => (h === null || h === undefined ? "—" : `${Math.floor(h)}j ${Math.round((h % 1) * 60)}m`);
+
 function parsePasteData(text, accounts) {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines.map((line) => {
@@ -639,6 +661,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [exportedYears, setExportedYears] = useState({});
   const [recapYear, setRecapYear] = useState(String(new Date().getFullYear()));
 
+  // ---- Live Tracker: state terpisah total dari Input Data GMV (sengaja tidak digabung) ----
+  const [liveSessions, setLiveSessions] = useState([]);
+  const [liveDraft, setLiveDraft] = useState({ accountId: "", date: todayStr(), hostName: "", startTime: "", endTime: "", orders: "", directGmv: "", totalViewers: "", co: "", ctr: "", gpm: "" });
+  const [liveFilterMonth, setLiveFilterMonth] = useState(todayYM());
+  const [liveSavedFlash, setLiveSavedFlash] = useState(false);
+
   const [hiddenAccounts, setHiddenAccounts] = useState(new Set());
   const [inputMode, setInputMode] = useState("form");
   const [inputDate, setInputDate] = useState(todayStr());
@@ -675,14 +703,16 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       const accountIds = finalCfg.accounts.map((a) => a.id);
       try {
-        const [ent, tgt, rev] = await Promise.all([
+        const [ent, tgt, rev, live] = await Promise.all([
           fetchAllEntries(accountIds),
           fetchAllTargets(accountIds),
           fetchAllRevisions(),
+          fetchAllLiveSessions(accountIds),
         ]);
         setEntries(ent);
         setTargets(tgt);
         setRevisions(rev);
+        setLiveSessions(live);
       } catch (e) {
         console.error("Gagal memuat data per-akun:", e);
       }
@@ -959,6 +989,46 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     });
   }, [adPerformance.perAccount]);
 
+  // ---- Live Tracker: filter & agregasi (terpisah total dari useMemo Input Data GMV) ----
+  const liveSessionsForMonth = useMemo(() => {
+    return liveSessions
+      .filter((s) => s.date && s.date.startsWith(liveFilterMonth))
+      .filter((s) => isAdmin || s.accountId === myAccountId || true) // semua orang bisa LIHAT, cuma yang bisa EDIT dibatasi di UI/rules
+      .sort((a, b) => (b.date + (b.startTime || "")).localeCompare(a.date + (a.startTime || "")));
+  }, [liveSessions, liveFilterMonth, isAdmin, myAccountId]);
+
+  const liveStats = useMemo(() => {
+    const sessions = liveSessionsForMonth;
+    const totalSessions = sessions.length;
+    const totalOrders = sessions.reduce((s, x) => s + (x.orders || 0), 0);
+    const totalGmv = sessions.reduce((s, x) => s + (x.directGmv || 0), 0);
+    const totalViewers = sessions.reduce((s, x) => s + (x.totalViewers || 0), 0);
+    const totalHours = sessions.reduce((s, x) => s + (calcLiveHours(x.startTime, x.endTime) || 0), 0);
+    const avgCo = sessions.filter((x) => x.co !== null && x.co !== undefined).length > 0
+      ? sessions.reduce((s, x) => s + (x.co || 0), 0) / sessions.filter((x) => x.co !== null && x.co !== undefined).length
+      : null;
+    const avgCtr = sessions.filter((x) => x.ctr !== null && x.ctr !== undefined).length > 0
+      ? sessions.reduce((s, x) => s + (x.ctr || 0), 0) / sessions.filter((x) => x.ctr !== null && x.ctr !== undefined).length
+      : null;
+    const avgGpm = sessions.filter((x) => x.gpm !== null && x.gpm !== undefined).length > 0
+      ? sessions.reduce((s, x) => s + (x.gpm || 0), 0) / sessions.filter((x) => x.gpm !== null && x.gpm !== undefined).length
+      : null;
+
+    // ranking host berdasarkan total Direct GMV bulan berjalan
+    const byHost = {};
+    sessions.forEach((x) => {
+      const key = `${x.accountId}__${x.hostName}`;
+      if (!byHost[key]) byHost[key] = { hostName: x.hostName, accountName: x.accountName, accountId: x.accountId, sessions: 0, gmv: 0, orders: 0, hours: 0 };
+      byHost[key].sessions += 1;
+      byHost[key].gmv += x.directGmv || 0;
+      byHost[key].orders += x.orders || 0;
+      byHost[key].hours += calcLiveHours(x.startTime, x.endTime) || 0;
+    });
+    const hostRanking = Object.values(byHost).sort((a, b) => b.gmv - a.gmv);
+
+    return { totalSessions, totalOrders, totalGmv, totalViewers, totalHours, avgCo, avgCtr, avgGpm, hostRanking };
+  }, [liveSessionsForMonth]);
+
   // Rating & Followers adalah metrik "snapshot" (bukan akumulasi harian seperti GMV) — yang
   // dibandingkan adalah nilai hari ini vs persis nilai kemarin, konsisten dengan definisi
   // "Hari Ini"/"Kemarin" dashboard ini (effectiveToday, H-1 dari tanggal kalender asli).
@@ -1188,6 +1258,62 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     } catch (e) {
       setSaving(false);
       showToast("error", `Gagal menyimpan budget: ${e.message || "cek koneksi"}.`);
+    }
+  };
+
+  /* ---------- handlers: Live Tracker (terpisah total dari Input Data GMV) ---------- */
+  const updateLiveDraftField = (field, value) => setLiveDraft((prev) => ({ ...prev, [field]: value }));
+
+  const saveLiveSessionEntry = async () => {
+    const acc = accounts.find((a) => a.id === liveDraft.accountId);
+    if (!acc) { showToast("error", "Pilih toko dulu sebelum simpan sesi live."); return; }
+    if (!isAdmin && acc.id !== myAccountId) { showToast("error", "Kamu cuma bisa input sesi live untuk tokomu sendiri."); return; }
+    if (!liveDraft.date || !liveDraft.hostName.trim()) { showToast("error", "Tanggal dan Nama Host wajib diisi."); return; }
+
+    setSaving(true);
+    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const sessionData = {
+      date: liveDraft.date,
+      hostName: liveDraft.hostName.trim(),
+      startTime: liveDraft.startTime || null,
+      endTime: liveDraft.endTime || null,
+      orders: liveDraft.orders === "" ? null : parseNum(liveDraft.orders),
+      directGmv: liveDraft.directGmv === "" ? null : parseNum(liveDraft.directGmv),
+      totalViewers: liveDraft.totalViewers === "" ? null : parseNum(liveDraft.totalViewers),
+      co: liveDraft.co === "" ? null : parseDecimal(liveDraft.co),
+      ctr: liveDraft.ctr === "" ? null : parseDecimal(liveDraft.ctr),
+      gpm: liveDraft.gpm === "" ? null : parseNum(liveDraft.gpm),
+      accountName: acc.name,
+      platform: acc.platform,
+      createdAt: Date.now(),
+    };
+    try {
+      await saveLiveSession(acc.id, sessionId, sessionData);
+      setLiveSessions((prev) => [...prev, { id: sessionId, accountId: acc.id, ...sessionData }]);
+      setSaving(false);
+      setLiveSavedFlash(true);
+      setTimeout(() => setLiveSavedFlash(false), 2000);
+      showToast("success", `Sesi live ${acc.name} (${liveDraft.hostName}) berhasil dicatat.`);
+      // reset draft tapi pertahankan toko & tanggal yang sama (mempermudah input berturut-turut)
+      setLiveDraft((prev) => ({ ...prev, hostName: "", startTime: "", endTime: "", orders: "", directGmv: "", totalViewers: "", co: "", ctr: "", gpm: "" }));
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal menyimpan sesi live: ${e.message || "cek koneksi / izin akun"}.`);
+    }
+  };
+
+  const removeLiveSession = async (session) => {
+    if (!isAdmin && session.accountId !== myAccountId) return;
+    if (!window.confirm(`Hapus sesi live ${session.accountName} — ${session.hostName} (${session.date})? Tindakan ini tidak bisa dibatalkan.`)) return;
+    setSaving(true);
+    try {
+      await deleteLiveSession(session.accountId, session.id);
+      setLiveSessions((prev) => prev.filter((s) => s.id !== session.id));
+      setSaving(false);
+      showToast("success", "Sesi live berhasil dihapus.");
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal menghapus: ${e.message || "cek koneksi / izin akun"}.`);
     }
   };
 
@@ -1499,12 +1625,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       {/* TABS */}
       <div className="flex gap-1.5 mb-5 p-1 rounded-xl flex-wrap" style={{ background: PALETTE.panelAlt, width: "fit-content" }}>
-        {[["overview", "Ringkasan"], ["input", "Input Data"], ["sumber", "Sumber GMV"], ["iklan", "Performa Iklan"], ["settings", "Target & Akun"]].map(([key, label]) => (
+        {[["overview", "Ringkasan"], ["input", "Input Data"], ["sumber", "Sumber GMV"], ["iklan", "Performa Iklan"], ["live", "Live Tracker"], ["settings", "Target & Akun"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
-            className="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all duration-200"
+            className="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all duration-200 flex items-center gap-1.5"
             style={tab === key
-              ? { background: `linear-gradient(135deg, ${PALETTE.brand}, ${PALETTE.brand2})`, color: "#fff", boxShadow: glow(PALETTE.brand, 0.28) }
+              ? (key === "live"
+                  ? { background: `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})`, color: "#fff", boxShadow: glow(LIVE_ACCENT, 0.28) }
+                  : { background: `linear-gradient(135deg, ${PALETTE.brand}, ${PALETTE.brand2})`, color: "#fff", boxShadow: glow(PALETTE.brand, 0.28) })
               : { background: "transparent", color: PALETTE.inkSoft }}>
+            {key === "live" && <Radio size={14} />}
             {label}
           </button>
         ))}
@@ -2398,6 +2527,250 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               </button>
             )}
             <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>Kolom "ROAS Hari Ini" & "vs Kemarin" memakai definisi "Hari Ini" yang sama seperti di tab Ringkasan (H-1 dari tanggal kalender asli). Budget/Hari disimpan per bulan — ganti bulan di selector atas untuk atur budget bulan lain.</div>
+          </Card>
+        </div>
+      )}
+
+      {/* ===================== LIVE TRACKER ===================== */}
+      {/* Fitur ini SENGAJA dipisah total dari "Input Data" GMV — beda state, beda koleksi
+          Firestore (liveSessions, bukan entries), beda warna identitas (rose, bukan violet)
+          — supaya tidak ada yang ketuker isi form GMV harian dengan form sesi Live. */}
+      {tab === "live" && (
+        <div className="space-y-5">
+          <Card accent={LIVE_ACCENT}>
+            <div className="flex items-center gap-2 mb-1">
+              <Radio size={18} style={{ color: LIVE_ACCENT }} />
+              <SectionTitle eyebrow="Bukan Input Data GMV — form terpisah" title="Live Tracker" />
+            </div>
+            <div className="text-xs" style={{ color: PALETTE.inkSoft }}>
+              Catat performa tiap sesi live: host, jam mulai/selesai, orders, GMV langsung dari live, total viewers, CO%, CTR%, dan GPM. Satu tanggal boleh punya beberapa sesi (host beda, jam beda) — tiap submit jadi catatan terpisah, bukan menimpa data lain.
+            </div>
+          </Card>
+
+          {/* form input sesi live — identitas visual rose, beda dari form Input Data GMV (violet) */}
+          <Card className="border-2" style={{ borderColor: LIVE_ACCENT_SOFT }}>
+            <div className="flex items-center gap-2 mb-4">
+              <span className="w-7 h-7 rounded-full flex items-center justify-center shrink-0" style={{ background: LIVE_ACCENT_SOFT }}>
+                <Radio size={14} style={{ color: LIVE_ACCENT }} />
+              </span>
+              <h3 className="text-sm font-bold" style={{ color: LIVE_ACCENT_DEEP }}>Catat Sesi Live Baru</h3>
+              {liveSavedFlash && <span className="text-xs flex items-center gap-1 ml-auto" style={{ color: PALETTE.teal }}><CheckCircle2 size={13} />Tersimpan</span>}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+              <div className="col-span-2 sm:col-span-1">
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama Toko</label>
+                <select value={liveDraft.accountId} onChange={(e) => updateLiveDraftField("accountId", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }}>
+                  <option value="">Pilih toko…</option>
+                  {accounts.filter((a) => isAdmin || a.id === myAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Platform</label>
+                <div className="text-sm px-2.5 py-1.5 rounded border" style={{ borderColor: LIVE_ACCENT_SOFT, background: PALETTE.panelAlt, color: PALETTE.inkSoft }}>
+                  {accounts.find((a) => a.id === liveDraft.accountId)?.platform === "shopee" ? "Shopee" : accounts.find((a) => a.id === liveDraft.accountId) ? "TikTok Shop" : "—"}
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Date</label>
+                <input type="date" value={liveDraft.date} onChange={(e) => updateLiveDraftField("date", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama HOST</label>
+                <input type="text" value={liveDraft.hostName} onChange={(e) => updateLiveDraftField("hostName", e.target.value)} placeholder="contoh: Dinda"
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>START Live</label>
+                <input type="time" value={liveDraft.startTime} onChange={(e) => updateLiveDraftField("startTime", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>END Live</label>
+                <input type="time" value={liveDraft.endTime} onChange={(e) => updateLiveDraftField("endTime", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div className="col-span-2 sm:col-span-2">
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Live Hours (otomatis)</label>
+                <div className="text-sm px-2.5 py-1.5 rounded border flex items-center gap-1.5" style={{ borderColor: LIVE_ACCENT_SOFT, background: PALETTE.panelAlt, fontFamily: "'JetBrains Mono', monospace", color: LIVE_ACCENT_DEEP }}>
+                  <Clock size={13} />{fmtHours(calcLiveHours(liveDraft.startTime, liveDraft.endTime))}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Orders</label>
+                <input type="text" inputMode="numeric" value={liveDraft.orders !== "" ? fmtNum(liveDraft.orders) : ""} onChange={(e) => updateLiveDraftField("orders", e.target.value === "" ? "" : parseNum(e.target.value))}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Direct GMV (Rp)</label>
+                <input type="text" inputMode="numeric" value={liveDraft.directGmv !== "" ? fmtNum(liveDraft.directGmv) : ""} onChange={(e) => updateLiveDraftField("directGmv", e.target.value === "" ? "" : parseNum(e.target.value))}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Total Viewers</label>
+                <input type="text" inputMode="numeric" value={liveDraft.totalViewers !== "" ? fmtNum(liveDraft.totalViewers) : ""} onChange={(e) => updateLiveDraftField("totalViewers", e.target.value === "" ? "" : parseNum(e.target.value))}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>CO (%)</label>
+                <input type="text" inputMode="decimal" placeholder="contoh: 3,2" value={liveDraft.co} onChange={(e) => updateLiveDraftField("co", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>CTR (%)</label>
+                <input type="text" inputMode="decimal" placeholder="contoh: 5,1" value={liveDraft.ctr} onChange={(e) => updateLiveDraftField("ctr", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>GPM</label>
+                <input type="text" inputMode="numeric" placeholder="GMV per 1000 viewer" value={liveDraft.gpm !== "" ? fmtNum(liveDraft.gpm) : ""} onChange={(e) => updateLiveDraftField("gpm", e.target.value === "" ? "" : parseNum(e.target.value))}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, fontFamily: "'JetBrains Mono', monospace" }} />
+              </div>
+            </div>
+            <div className="text-[11px] mb-3" style={{ color: PALETTE.inkFaint }}>CO%, CTR%, dan GPM diisi langsung dari angka yang tampil di TikTok Shop/Shopee Live Analytics — tidak dihitung otomatis oleh sistem karena butuh data impression/klik yang tidak tercatat di sini.</div>
+
+            <button onClick={saveLiveSessionEntry} disabled={saving} className={`${btnClass} flex items-center gap-1.5`} style={{ background: `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})`, color: "#fff", boxShadow: glow(LIVE_ACCENT, 0.3), opacity: saving ? 0.7 : 1 }}>
+              {saving && <Loader2 size={14} className="animate-spin" />}{saving ? "Menyimpan…" : "Simpan Sesi Live"}<Radio size={14} />
+            </button>
+          </Card>
+
+          {/* filter bulan + hero stats */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold" style={{ color: PALETTE.inkSoft }}>Tampilkan bulan:</span>
+            <select value={liveFilterMonth} onChange={(e) => setLiveFilterMonth(e.target.value)}
+              className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
+              {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <Card accent={LIVE_ACCENT}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Sesi Live</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{liveStats.totalSessions}</div>
+            </Card>
+            <Card accent={PALETTE.brand}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Direct GMV</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(liveStats.totalGmv)}</div>
+            </Card>
+            <Card accent={PALETTE.teal}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Orders</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtNum(liveStats.totalOrders)}</div>
+            </Card>
+            <Card accent={PALETTE.ochre}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Jam Live</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtHours(liveStats.totalHours)}</div>
+            </Card>
+            <Card accent={PALETTE.plum}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Rata-rata CO%</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{liveStats.avgCo !== null ? `${liveStats.avgCo.toFixed(1)}%` : "—"}</div>
+            </Card>
+            <Card accent={PALETTE.coral}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Rata-rata GPM</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{liveStats.avgGpm !== null ? fmtCompactRp(liveStats.avgGpm) : "—"}</div>
+            </Card>
+          </div>
+
+          {/* ranking host */}
+          {liveStats.hostRanking.length > 0 && (
+            <Card>
+              <SectionTitle eyebrow={`${monthLabel(liveFilterMonth)} \u2022 Urut Direct GMV`} title="Ranking Host" />
+              <div className="space-y-2.5">
+                {liveStats.hostRanking.map((h, idx) => {
+                  const [bandFrom, bandTo] = rankBandColors(idx);
+                  return (
+                    <div key={`${h.accountId}-${h.hostName}`} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
+                      <div className="flex items-center gap-2 px-3 py-2.5 shrink-0 w-36 sm:w-48" style={{ background: PALETTE.panel, borderTop: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, borderLeft: `1px solid ${PALETTE.line}` }}>
+                        <Radio size={14} style={{ color: LIVE_ACCENT }} className="shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs sm:text-sm font-bold truncate">{h.hostName}</div>
+                          <div className="text-[10px] truncate" style={{ color: PALETTE.inkSoft }}>{h.accountName}</div>
+                        </div>
+                      </div>
+                      <div className="flex-1 flex items-center justify-between gap-3 px-4 py-2.5" style={{ background: `linear-gradient(110deg, ${bandFrom}, ${bandTo})` }}>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {idx === 0 ? <Trophy size={20} className="text-white drop-shadow" /> : idx <= 2 ? <Medal size={18} className="text-white/90" /> : null}
+                          <span className="text-white font-black text-xl sm:text-2xl leading-none" style={{ fontFamily: "'Sora', sans-serif" }}>{idx + 1}</span>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-white font-extrabold text-base sm:text-lg leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(h.gmv)}</div>
+                          <div className="text-white/80 text-[10px] mt-0.5">{h.sessions} sesi \u2022 {fmtNum(h.orders)} orders \u2022 {fmtHours(h.hours)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* daftar sesi live */}
+          <Card>
+            <SectionTitle eyebrow={monthLabel(liveFilterMonth)} title="Daftar Sesi Live" />
+            {liveSessionsForMonth.length === 0 ? (
+              <div className="text-sm py-6 text-center" style={{ color: PALETTE.inkFaint }}>Belum ada sesi live tercatat di {monthLabel(liveFilterMonth)}.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm min-w-[1100px]">
+                  <thead>
+                    <tr className="text-left" style={{ color: PALETTE.inkSoft }}>
+                      <th className="font-medium py-1.5 pr-3">Date</th>
+                      <th className="font-medium py-1.5 pr-3">Toko</th>
+                      <th className="font-medium py-1.5 pr-3">HOST</th>
+                      <th className="font-medium py-1.5 pr-3">Start</th>
+                      <th className="font-medium py-1.5 pr-3">End</th>
+                      <th className="font-medium py-1.5 pr-3">Live Hours</th>
+                      <th className="font-medium py-1.5 pr-3">Orders</th>
+                      <th className="font-medium py-1.5 pr-3">Direct GMV</th>
+                      <th className="font-medium py-1.5 pr-3">Viewers</th>
+                      <th className="font-medium py-1.5 pr-3">CO%</th>
+                      <th className="font-medium py-1.5 pr-3">CTR%</th>
+                      <th className="font-medium py-1.5 pr-3">GPM</th>
+                      <th className="font-medium py-1.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liveSessionsForMonth.map((s) => {
+                      const canEdit = isAdmin || s.accountId === myAccountId;
+                      const hrs = calcLiveHours(s.startTime, s.endTime);
+                      return (
+                        <tr key={s.id} className="border-t" style={{ borderColor: PALETTE.line, opacity: canEdit ? 1 : 0.7 }}>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.date}</td>
+                          <td className="py-2 pr-3"><div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full" style={{ background: accounts.find((a) => a.id === s.accountId)?.color || PALETTE.inkFaint }} />{s.accountName}<PlatformTag platform={s.platform} /></div></td>
+                          <td className="py-2 pr-3 font-medium">{s.hostName}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.startTime || "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.endTime || "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace", color: LIVE_ACCENT_DEEP }}>{fmtHours(hrs)}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.orders !== null ? fmtNum(s.orders) : "—"}</td>
+                          <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.directGmv !== null ? fmtRp(s.directGmv) : "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.totalViewers !== null ? fmtNum(s.totalViewers) : "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.co !== null && s.co !== undefined ? `${fmtRating(s.co)}%` : "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.ctr !== null && s.ctr !== undefined ? `${fmtRating(s.ctr)}%` : "—"}</td>
+                          <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.gpm !== null ? fmtNum(s.gpm) : "—"}</td>
+                          <td className="py-2">
+                            {canEdit && (
+                              <button onClick={() => removeLiveSession(s)} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.coral }} title="Hapus sesi ini">
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         </div>
       )}
