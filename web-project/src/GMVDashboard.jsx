@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import {
   ArrowUp, ArrowDown, Minus, AlertTriangle, CheckCircle2, Info,
-  ClipboardPaste, ChevronDown, ChevronRight, Calendar, Trash2, Copy,
+  ClipboardPaste, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Calendar, Trash2, Copy,
   Loader2, ShoppingBag, Music2, PlusCircle, FileSpreadsheet, Download, XCircle, Trophy, Medal,
   Radio, Eye, Clock,
 } from "lucide-react";
@@ -235,6 +235,24 @@ const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); r
 const daysInMonthOf = (ymStr) => { const [y, m] = ymStr.split("-").map(Number); return new Date(y, m, 0).getDate(); };
 const monthLabel = (ymStr) => { const [y, m] = ymStr.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("id-ID", { month: "long", year: "numeric" }); };
 const dayShortLabel = (dateStr) => new Date(dateStr).toLocaleDateString("id-ID", { weekday: "short" });
+
+// Bangun grid kalender 1 bulan (array of weeks, tiap week array of 7 { date, inMonth }).
+// Minggu dimulai Senin (sesuai konvensi lokal), termasuk tanggal "bleed" dari bulan
+// sebelum/sesudahnya supaya grid selalu rapi kelipatan 7.
+function buildCalendarWeeks(year, month) {
+  const startWeekday = (new Date(year, month, 1).getDay() + 6) % 7; // Senin=0
+  const daysInMonthCount = new Date(year, month + 1, 0).getDate();
+  const prevMonthDays = new Date(year, month, 0).getDate();
+  const cells = [];
+  for (let i = startWeekday - 1; i >= 0; i--) cells.push({ date: new Date(year, month - 1, prevMonthDays - i), inMonth: false });
+  for (let d = 1; d <= daysInMonthCount; d++) cells.push({ date: new Date(year, month, d), inMonth: true });
+  let nextDay = 1;
+  while (cells.length % 7 !== 0) cells.push({ date: new Date(year, month + 1, nextDay++), inMonth: false });
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
 // "Hari ini" di seluruh dashboard ini = tanggal kalender asli dikurangi 1 hari, karena data GMV
 // baru final/lengkap keesokan harinya. Semua referensi "Hari Ini" / "Kemarin" / "Minggu Lalu"
 // memakai titik acuan ini supaya konsisten satu sama lain.
@@ -384,6 +402,145 @@ function StatusPill({ status }) {
     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap" style={{ color: m.color, background: m.bg, boxShadow: `0 2px 8px -2px ${m.color}40` }}>
       {m.label}
     </span>
+  );
+}
+
+// Popover kalender dual-month dengan pilih-rentang via klik langsung (klik tanggal mulai,
+// lalu klik tanggal akhir) — dipakai bersama di toggle Custom dashboard utama dan filter
+// laporan Live Tracker, supaya UX-nya konsisten di kedua tempat.
+function DateRangePicker({ startDate, endDate, onApply, accentColor }) {
+  const accent = accentColor || PALETTE.brand;
+  const [open, setOpen] = useState(false);
+  const [draftStart, setDraftStart] = useState(startDate);
+  const [draftEnd, setDraftEnd] = useState(endDate);
+  const [pickingEnd, setPickingEnd] = useState(false);
+  const [baseMonth, setBaseMonth] = useState(() => { const d = new Date(startDate); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const popRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (e) => { if (popRef.current && !popRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+
+  const openPicker = () => {
+    setDraftStart(startDate); setDraftEnd(endDate); setPickingEnd(false);
+    const d = new Date(startDate); setBaseMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+    setOpen(true);
+  };
+
+  const handleDayClick = (dateStr) => {
+    if (!pickingEnd) {
+      setDraftStart(dateStr); setDraftEnd(dateStr); setPickingEnd(true);
+    } else {
+      if (dateStr < draftStart) { setDraftEnd(draftStart); setDraftStart(dateStr); }
+      else { setDraftEnd(dateStr); }
+      setPickingEnd(false);
+    }
+  };
+
+  const applyPreset = (backStart, backEnd) => {
+    const end = ymd(addDays(effectiveToday(), -backEnd));
+    const start = ymd(addDays(effectiveToday(), -backStart));
+    setDraftStart(start); setDraftEnd(end); setPickingEnd(false);
+    const d = new Date(start); setBaseMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+  };
+
+  const confirm = () => {
+    const s = draftStart <= draftEnd ? draftStart : draftEnd;
+    const e = draftStart <= draftEnd ? draftEnd : draftStart;
+    onApply(s, e);
+    setOpen(false);
+  };
+
+  const renderMonth = (monthDate) => {
+    const weeks = buildCalendarWeeks(monthDate.getFullYear(), monthDate.getMonth());
+    const lo = draftStart <= draftEnd ? draftStart : draftEnd;
+    const hi = draftStart <= draftEnd ? draftEnd : draftStart;
+    return (
+      <div className="flex-1 min-w-[230px]">
+        <div className="text-center text-xs font-bold mb-2" style={{ color: PALETTE.ink, fontFamily: "'JetBrains Mono', monospace" }}>
+          {pad(monthDate.getMonth() + 1)}/{monthDate.getFullYear()}
+        </div>
+        <div className="grid grid-cols-7 gap-0.5 mb-1">
+          {["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"].map((d) => (
+            <div key={d} className="text-[10px] text-center font-semibold py-1" style={{ color: PALETTE.inkSoft }}>{d}</div>
+          ))}
+        </div>
+        {weeks.map((week, wi) => (
+          <div key={wi} className="grid grid-cols-7 gap-0.5 mb-0.5">
+            {week.map((cell, ci) => {
+              const ds = ymd(cell.date);
+              const isStart = ds === lo, isEnd = ds === hi;
+              const inRange = ds > lo && ds < hi;
+              const isToday = ds === todayStr();
+              return (
+                <button key={ci} disabled={!cell.inMonth} onClick={() => handleDayClick(ds)}
+                  className="text-xs h-7 rounded-md transition-all"
+                  style={{
+                    color: !cell.inMonth ? PALETTE.inkFaint : (isStart || isEnd) ? "#fff" : PALETTE.ink,
+                    background: (isStart || isEnd) ? accent : inRange ? `${accent}22` : "transparent",
+                    fontWeight: isStart || isEnd ? 700 : 400,
+                    cursor: cell.inMonth ? "pointer" : "default",
+                    boxShadow: isToday && !isStart && !isEnd ? `inset 0 0 0 1px ${accent}` : "none",
+                  }}>
+                  {cell.date.getDate()}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="relative inline-block">
+      <button onClick={openPicker}
+        className="text-sm px-3 py-1.5 rounded-lg border outline-none flex items-center gap-1.5" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }}>
+        <Calendar size={14} style={{ color: accent }} />
+        {startDate === endDate
+          ? new Date(startDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })
+          : `${new Date(startDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })} \u2013 ${new Date(endDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}`}
+      </button>
+      {open && (
+        <div ref={popRef} className="absolute z-50 mt-2 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}`, boxShadow: cardShadowHover, right: 0, width: "min(92vw, 520px)" }}>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {[["Hari Ini", 0, 0], ["Kemarin", 1, 1], ["7 Hari", 6, 0], ["30 Hari", 29, 0]].map(([label, bs, be]) => (
+              <button key={label} onClick={() => applyPreset(bs, be)}
+                className="text-[11px] px-2.5 py-1 rounded-full font-medium" style={{ background: PALETTE.panelAlt, color: PALETTE.inkSoft }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex gap-1">
+              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() - 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsLeft size={16} /></button>
+              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() - 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronLeft size={16} /></button>
+            </div>
+            <span className="text-[11px]" style={{ color: PALETTE.inkFaint }}>{pickingEnd ? "Klik tanggal akhir…" : "Klik tanggal mulai…"}</span>
+            <div className="flex gap-1">
+              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronRight size={16} /></button>
+              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() + 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsRight size={16} /></button>
+            </div>
+          </div>
+          <div className="flex gap-3 flex-wrap sm:flex-nowrap">
+            {renderMonth(baseMonth)}
+            {renderMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))}
+          </div>
+          <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: `1px solid ${PALETTE.line}` }}>
+            <span className="text-xs" style={{ color: PALETTE.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+              {draftStart} {draftStart !== draftEnd ? `\u2013 ${draftEnd}` : ""}
+            </span>
+            <div className="flex gap-2">
+              <button onClick={() => setOpen(false)} className="text-xs px-3 py-1.5 rounded-lg" style={{ color: PALETTE.inkSoft }}>Batal</button>
+              <button onClick={confirm} className="text-xs px-3 py-1.5 rounded-lg font-semibold" style={{ background: accent, color: "#fff" }}>Terapkan</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -692,6 +849,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [newLiveAccountPlatform, setNewLiveAccountPlatform] = useState("shopee");
   const [liveDraft, setLiveDraft] = useState({ accountId: "", date: todayStr(), hostName: "", startTime: "", endTime: "", orders: "", directGmv: "", totalViewers: "", co: "", ctr: "", gpm: "" });
   const [liveFilterMonth, setLiveFilterMonth] = useState(todayYM());
+  const [liveFilterMode, setLiveFilterMode] = useState("month"); // "month" | "custom"
+  const [liveFilterStart, setLiveFilterStart] = useState(todayStr());
+  const [liveFilterEnd, setLiveFilterEnd] = useState(todayStr());
   const [liveFilterAccount, setLiveFilterAccount] = useState("all");
   const [liveFilterHost, setLiveFilterHost] = useState("all");
   const [liveSavedFlash, setLiveSavedFlash] = useState(false);
@@ -761,7 +921,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     setAdBudgetDraft(adBudgets[selectedMonth] || {});
   }, [selectedMonth, targets, adBudgets]);
   useEffect(() => { setDraft(entries[inputDate] ? { ...entries[inputDate] } : {}); }, [inputDate, entries]);
-  useEffect(() => { setLiveFilterHost("all"); }, [liveFilterAccount, liveFilterMonth]);
+  useEffect(() => { setLiveFilterHost("all"); }, [liveFilterAccount, liveFilterMonth, liveFilterMode, liveFilterStart, liveFilterEnd]);
 
   const persist = useCallback(async (key, value, setter) => {
     setSaving(true);
@@ -1052,18 +1212,38 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   // Opsi host yang ditampilkan di dropdown — dihitung dari sesi yang sudah disaring bulan+toko
   // (BELUM disaring host), supaya daftar host yang muncul relevan dengan filter toko yang dipilih.
+  // helper: cek apakah tanggal sesi cocok dengan filter periode aktif (mode bulan atau custom)
+  const liveDateInFilter = useCallback((dateStr) => {
+    if (!dateStr) return false;
+    if (liveFilterMode === "custom") {
+      const lo = liveFilterStart <= liveFilterEnd ? liveFilterStart : liveFilterEnd;
+      const hi = liveFilterStart <= liveFilterEnd ? liveFilterEnd : liveFilterStart;
+      return dateStr >= lo && dateStr <= hi;
+    }
+    return dateStr.startsWith(liveFilterMonth);
+  }, [liveFilterMode, liveFilterMonth, liveFilterStart, liveFilterEnd]);
+
   const liveHostOptions = useMemo(() => {
-    const pool = liveSessions.filter((s) => s.date && s.date.startsWith(liveFilterMonth) && (liveFilterAccount === "all" || s.accountId === liveFilterAccount));
+    const pool = liveSessions.filter((s) => liveDateInFilter(s.date) && (liveFilterAccount === "all" || s.accountId === liveFilterAccount));
     return Array.from(new Set(pool.map((s) => s.hostName).filter(Boolean))).sort((a, b) => a.localeCompare(b));
-  }, [liveSessions, liveFilterMonth, liveFilterAccount]);
+  }, [liveSessions, liveDateInFilter, liveFilterAccount]);
 
   const liveSessionsForMonth = useMemo(() => {
     return liveSessions
-      .filter((s) => s.date && s.date.startsWith(liveFilterMonth))
+      .filter((s) => liveDateInFilter(s.date))
       .filter((s) => liveFilterAccount === "all" || s.accountId === liveFilterAccount)
       .filter((s) => liveFilterHost === "all" || s.hostName === liveFilterHost)
       .sort((a, b) => (b.date + (b.startTime || "")).localeCompare(a.date + (a.startTime || "")));
-  }, [liveSessions, liveFilterMonth, liveFilterAccount, liveFilterHost]);
+  }, [liveSessions, liveDateInFilter, liveFilterAccount, liveFilterHost]);
+
+  const livePeriodLabel = liveFilterMode === "custom"
+    ? (() => {
+        const fmt = (d) => new Date(d).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+        const lo = liveFilterStart <= liveFilterEnd ? liveFilterStart : liveFilterEnd;
+        const hi = liveFilterStart <= liveFilterEnd ? liveFilterEnd : liveFilterStart;
+        return lo === hi ? fmt(lo) : `${fmt(lo)} \u2013 ${fmt(hi)}`;
+      })()
+    : monthLabel(liveFilterMonth);
 
   const liveStats = useMemo(() => {
     const sessions = liveSessionsForMonth;
@@ -1420,7 +1600,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       const accLabel = liveFilterAccount === "all" ? "SemuaToko" : (liveAccountOptions.find((a) => a.id === liveFilterAccount)?.name || liveFilterAccount).replace(/\s+/g, "");
       const hostLabel = liveFilterHost === "all" ? "" : `-${liveFilterHost.replace(/\s+/g, "")}`;
-      XLSX.writeFile(wb, `Laporan-Live-${liveFilterMonth}-${accLabel}${hostLabel}.xlsx`);
+      const periodLabelForFile = liveFilterMode === "custom" ? `${liveFilterStart}_${liveFilterEnd}` : liveFilterMonth;
+      XLSX.writeFile(wb, `Laporan-Live-${periodLabelForFile}-${accLabel}${hostLabel}.xlsx`);
       showToast("success", "Laporan Live berhasil diexport.");
     } catch (e) {
       showToast("error", `Export gagal: ${e.message || "coba lagi"}.`);
@@ -1783,31 +1964,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               onChange={(e) => { setSelectedDate(e.target.value); setSelectedMonth(e.target.value.slice(0, 7)); }}
               className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
           ) : (
-            <div className="flex items-center gap-2 flex-wrap justify-end">
-              {/* quick preset, mirip pola umum dashboard marketplace */}
-              <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
-                {[
-                  ["Hari Ini", 0, 0], ["Kemarin", 1, 1], ["7 Hari", 6, 0], ["30 Hari", 29, 0],
-                ].map(([label, backStart, backEnd]) => (
-                  <button key={label} onClick={() => {
-                    const end = ymd(addDays(effectiveToday(), -backEnd));
-                    const start = ymd(addDays(effectiveToday(), -backStart));
-                    setCustomStartDate(start); setCustomEndDate(end);
-                  }}
-                    className="text-[11px] px-2.5 py-1.5 font-medium transition-all"
-                    style={{ background: PALETTE.panel, color: PALETTE.inkSoft }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)}
-                  className="text-sm px-2.5 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
-                <span className="text-xs" style={{ color: PALETTE.inkSoft }}>s/d</span>
-                <input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)}
-                  className="text-sm px-2.5 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
-              </div>
-            </div>
+            <DateRangePicker
+              startDate={customStartDate}
+              endDate={customEndDate}
+              accentColor={PALETTE.brand}
+              onApply={(s, e) => { setCustomStartDate(s); setCustomEndDate(e); }}
+            />
           )}
         </div>
       </div>
@@ -2884,16 +3046,45 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </Card>
           )}
 
-          {/* filter laporan: bulan, toko, host + export */}
+          {/* filter laporan: bulan/custom, toko, host + export */}
           <Card>
             <SectionTitle title="Filter Laporan" />
             <div className="flex items-end gap-2 flex-wrap mb-3">
               <div>
-                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Bulan</label>
-                <select value={liveFilterMonth} onChange={(e) => setLiveFilterMonth(e.target.value)}
-                  className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
-                  {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>)}
-                </select>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Periode</label>
+                <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
+                  {[["month", "Bulanan"], ["custom", "Custom"]].map(([mode, label]) => (
+                    <button key={mode} onClick={() => {
+                      setLiveFilterMode(mode);
+                      if (mode === "custom") { setLiveFilterStart(todayStr()); setLiveFilterEnd(todayStr()); }
+                    }}
+                      className="text-xs px-3 py-1.5 font-semibold transition-all"
+                      style={{ background: liveFilterMode === mode ? `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})` : PALETTE.panel, color: liveFilterMode === mode ? "#fff" : PALETTE.inkSoft }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                {liveFilterMode === "month" ? (
+                  <>
+                    <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Bulan</label>
+                    <select value={liveFilterMonth} onChange={(e) => setLiveFilterMonth(e.target.value)}
+                      className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
+                      {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>)}
+                    </select>
+                  </>
+                ) : (
+                  <>
+                    <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Rentang Tanggal</label>
+                    <DateRangePicker
+                      startDate={liveFilterStart}
+                      endDate={liveFilterEnd}
+                      accentColor={LIVE_ACCENT}
+                      onApply={(s, e) => { setLiveFilterStart(s); setLiveFilterEnd(e); }}
+                    />
+                  </>
+                )}
               </div>
               <div>
                 <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Toko</label>
@@ -2915,7 +3106,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 <FileSpreadsheet size={14} />Export Laporan (.xlsx)
               </button>
             </div>
-            <div className="text-[11px]" style={{ color: PALETTE.inkFaint }}>Laporan mengikuti filter Bulan + Toko + Host di atas — kosongkan ke "Semua" untuk laporan menyeluruh, atau pilih spesifik untuk laporan per-toko atau per-host.</div>
+            <div className="text-[11px]" style={{ color: PALETTE.inkFaint }}>Laporan mengikuti filter Periode + Toko + Host di atas — kosongkan ke "Semua" untuk laporan menyeluruh, atau pilih spesifik untuk laporan per-toko atau per-host. Mode Custom bisa pilih rentang tanggal bebas, tidak terbatas satu bulan kalender.</div>
           </Card>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -2948,7 +3139,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           {/* ranking host */}
           {liveStats.hostRanking.length > 0 && (
             <Card>
-              <SectionTitle eyebrow={`${monthLabel(liveFilterMonth)} \u2022 Urut Direct GMV`} title="Ranking Host" />
+              <SectionTitle eyebrow={`${livePeriodLabel} \u2022 Urut Direct GMV`} title="Ranking Host" />
               <div className="space-y-2.5">
                 {liveStats.hostRanking.map((h, idx) => {
                   const [bandFrom, bandTo] = rankBandColors(idx);
@@ -2980,9 +3171,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* daftar sesi live */}
           <Card>
-            <SectionTitle eyebrow={monthLabel(liveFilterMonth)} title="Daftar Sesi Live" />
+            <SectionTitle eyebrow={livePeriodLabel} title="Daftar Sesi Live" />
             {liveSessionsForMonth.length === 0 ? (
-              <div className="text-sm py-6 text-center" style={{ color: PALETTE.inkFaint }}>Belum ada sesi live tercatat di {monthLabel(liveFilterMonth)}.</div>
+              <div className="text-sm py-6 text-center" style={{ color: PALETTE.inkFaint }}>Belum ada sesi live tercatat di {livePeriodLabel}.</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[1100px]">
