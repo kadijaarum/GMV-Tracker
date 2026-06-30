@@ -1645,7 +1645,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 )}
               </div>
             </Card>
-          </div>
 
           {/* leaderboard ranking pencapaian toko */}
           <Card>
