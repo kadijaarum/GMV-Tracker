@@ -496,7 +496,7 @@ function DateRangePicker({ startDate, endDate, onApply, accentColor }) {
   };
 
   return (
-    <div className="relative inline-block">
+    <>
       <button onClick={openPicker}
         className="text-sm px-3 py-1.5 rounded-lg border outline-none flex items-center gap-1.5" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }}>
         <Calendar size={14} style={{ color: accent }} />
@@ -505,42 +505,44 @@ function DateRangePicker({ startDate, endDate, onApply, accentColor }) {
           : `${new Date(startDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })} \u2013 ${new Date(endDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}`}
       </button>
       {open && (
-        <div ref={popRef} className="absolute z-50 mt-2 rounded-xl p-4" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}`, boxShadow: cardShadowHover, right: 0, width: "min(92vw, 520px)" }}>
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {[["Hari Ini", 0, 0], ["Kemarin", 1, 1], ["7 Hari", 6, 0], ["30 Hari", 29, 0]].map(([label, bs, be]) => (
-              <button key={label} onClick={() => applyPreset(bs, be)}
-                className="text-[11px] px-2.5 py-1 rounded-full font-medium" style={{ background: PALETTE.panelAlt, color: PALETTE.inkSoft }}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex gap-1">
-              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() - 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsLeft size={16} /></button>
-              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() - 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronLeft size={16} /></button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3" style={{ background: "rgba(28,21,35,0.45)" }}>
+          <div ref={popRef} className="rounded-xl p-4 w-full overflow-y-auto" style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}`, boxShadow: cardShadowHover, maxWidth: 520, maxHeight: "88vh" }}>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {[["Hari Ini", 0, 0], ["Kemarin", 1, 1], ["7 Hari", 6, 0], ["30 Hari", 29, 0]].map(([label, bs, be]) => (
+                <button key={label} onClick={() => applyPreset(bs, be)}
+                  className="text-[11px] px-2.5 py-1 rounded-full font-medium" style={{ background: PALETTE.panelAlt, color: PALETTE.inkSoft }}>
+                  {label}
+                </button>
+              ))}
             </div>
-            <span className="text-[11px]" style={{ color: PALETTE.inkFaint }}>{pickingEnd ? "Klik tanggal akhir…" : "Klik tanggal mulai…"}</span>
-            <div className="flex gap-1">
-              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronRight size={16} /></button>
-              <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() + 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsRight size={16} /></button>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex gap-1">
+                <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() - 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsLeft size={16} /></button>
+                <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() - 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronLeft size={16} /></button>
+              </div>
+              <span className="text-[11px]" style={{ color: PALETTE.inkFaint }}>{pickingEnd ? "Klik tanggal akhir…" : "Klik tanggal mulai…"}</span>
+              <div className="flex gap-1">
+                <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronRight size={16} /></button>
+                <button onClick={() => setBaseMonth(new Date(baseMonth.getFullYear() + 1, baseMonth.getMonth(), 1))} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.inkSoft }}><ChevronsRight size={16} /></button>
+              </div>
             </div>
-          </div>
-          <div className="flex gap-3 flex-wrap sm:flex-nowrap">
-            {renderMonth(baseMonth)}
-            {renderMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))}
-          </div>
-          <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: `1px solid ${PALETTE.line}` }}>
-            <span className="text-xs" style={{ color: PALETTE.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
-              {draftStart} {draftStart !== draftEnd ? `\u2013 ${draftEnd}` : ""}
-            </span>
-            <div className="flex gap-2">
-              <button onClick={() => setOpen(false)} className="text-xs px-3 py-1.5 rounded-lg" style={{ color: PALETTE.inkSoft }}>Batal</button>
-              <button onClick={confirm} className="text-xs px-3 py-1.5 rounded-lg font-semibold" style={{ background: accent, color: "#fff" }}>Terapkan</button>
+            <div className="flex gap-3 flex-wrap sm:flex-nowrap">
+              {renderMonth(baseMonth)}
+              {renderMonth(new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 1))}
+            </div>
+            <div className="flex items-center justify-between mt-3 pt-3 flex-wrap gap-2" style={{ borderTop: `1px solid ${PALETTE.line}` }}>
+              <span className="text-xs" style={{ color: PALETTE.inkSoft, fontFamily: "'JetBrains Mono', monospace" }}>
+                {draftStart} {draftStart !== draftEnd ? `\u2013 ${draftEnd}` : ""}
+              </span>
+              <div className="flex gap-2 ml-auto">
+                <button onClick={() => setOpen(false)} className="text-xs px-3 py-1.5 rounded-lg" style={{ color: PALETTE.inkSoft }}>Batal</button>
+                <button onClick={confirm} className="text-xs px-3 py-1.5 rounded-lg font-semibold" style={{ background: accent, color: "#fff" }}>Terapkan</button>
+              </div>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
