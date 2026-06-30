@@ -989,10 +989,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     const timeGonePercent = dim > 0 ? Math.min((elapsed / dim) * 100, 100) : 0;
 
     // Pencapaian hari ini selalu merujuk ke tanggal hari ini sungguhan & target bulan berjalan
-    // sungguhan (bukan bulan yang sedang dibrowse), supaya tetap akurat walau selectedMonth beda.
+    // sungguhan (bukan bulan yang sedang dibrowse) KALAU mode bulanan. Di mode Harian/Custom,
+    // "Hari Ini" mengikuti tanggal yang dipilih user (selectedDate / akhir rentang custom).
     const curYM = todayYM();
     const curDim = daysInMonthOf(curYM);
     const curMonthTargets = targets[curYM] || {};
+
+    const refDate = periodMode === "day" ? selectedDate
+      : periodMode === "custom" ? (customStartDate <= customEndDate ? customEndDate : customStartDate)
+      : todayStr();
+    const refYM = periodMode === "month" ? curYM : refDate.slice(0, 7);
+    const refDim = periodMode === "month" ? curDim : daysInMonthOf(refYM);
+    const refMonthTargets = periodMode === "month" ? curMonthTargets : (targets[refYM] || {});
 
     const perAccount = accounts.map((acc) => {
       const target = monthTargets[acc.id] || 0;
@@ -1007,13 +1015,13 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         const ratio = projected / target;
         status = ratio >= 1 ? "on-track" : ratio >= 0.85 ? "at-risk" : "behind";
       }
-      const todayGmv = entries[todayStr()]?.[acc.id]?.gmv;
-      const yestGmv = entries[ymd(addDays(effectiveToday(), -1))]?.[acc.id]?.gmv;
-      const lastWeekGmv = entries[ymd(addDays(effectiveToday(), -7))]?.[acc.id]?.gmv;
+      const todayGmv = entries[refDate]?.[acc.id]?.gmv;
+      const yestGmv = entries[ymd(addDays(new Date(refDate), -1))]?.[acc.id]?.gmv;
+      const lastWeekGmv = entries[ymd(addDays(new Date(refDate), -7))]?.[acc.id]?.gmv;
       const dDoD = todayGmv !== undefined && yestGmv ? ((todayGmv - yestGmv) / yestGmv) * 100 : null;
       const dWoW = todayGmv !== undefined && lastWeekGmv ? ((todayGmv - lastWeekGmv) / lastWeekGmv) * 100 : null;
 
-      const dailyTargetToday = curMonthTargets[acc.id] ? curMonthTargets[acc.id] / curDim : 0;
+      const dailyTargetToday = refMonthTargets[acc.id] ? refMonthTargets[acc.id] / refDim : 0;
       const pencapaianHariIni = dailyTargetToday > 0 && todayGmv !== undefined ? (todayGmv / dailyTargetToday) * 100 : null;
       const pencapaianKemarin = dailyTargetToday > 0 && yestGmv !== undefined ? (yestGmv / dailyTargetToday) * 100 : null;
       const achievementDiffPts = pencapaianHariIni !== null && pencapaianKemarin !== null ? pencapaianHariIni - pencapaianKemarin : null;
@@ -1032,17 +1040,17 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     else { const r = totalProjected / totalTarget; totalStatus = r >= 1 ? "on-track" : r >= 0.85 ? "at-risk" : "behind"; }
     const requiredRate = remaining > 0 ? Math.max((totalTarget - totalMtd) / remaining, 0) : null;
 
-    const todayTotal = accounts.reduce((s, a) => s + (entries[todayStr()]?.[a.id]?.gmv || 0), 0);
-    const yestTotal = accounts.reduce((s, a) => s + (entries[ymd(addDays(effectiveToday(), -1))]?.[a.id]?.gmv || 0), 0);
-    const lastWeekTotal = accounts.reduce((s, a) => s + (entries[ymd(addDays(effectiveToday(), -7))]?.[a.id]?.gmv || 0), 0);
-    const hasToday = accounts.some((a) => entries[todayStr()]?.[a.id]?.gmv !== undefined);
-    const hasYest = accounts.some((a) => entries[ymd(addDays(effectiveToday(), -1))]?.[a.id]?.gmv !== undefined);
-    const hasLastWeek = accounts.some((a) => entries[ymd(addDays(effectiveToday(), -7))]?.[a.id]?.gmv !== undefined);
+    const todayTotal = accounts.reduce((s, a) => s + (entries[refDate]?.[a.id]?.gmv || 0), 0);
+    const yestTotal = accounts.reduce((s, a) => s + (entries[ymd(addDays(new Date(refDate), -1))]?.[a.id]?.gmv || 0), 0);
+    const lastWeekTotal = accounts.reduce((s, a) => s + (entries[ymd(addDays(new Date(refDate), -7))]?.[a.id]?.gmv || 0), 0);
+    const hasToday = accounts.some((a) => entries[refDate]?.[a.id]?.gmv !== undefined);
+    const hasYest = accounts.some((a) => entries[ymd(addDays(new Date(refDate), -1))]?.[a.id]?.gmv !== undefined);
+    const hasLastWeek = accounts.some((a) => entries[ymd(addDays(new Date(refDate), -7))]?.[a.id]?.gmv !== undefined);
     const dDoDTotal = hasToday && hasYest && yestTotal ? ((todayTotal - yestTotal) / yestTotal) * 100 : null;
     const dWoWTotal = hasToday && hasLastWeek && lastWeekTotal ? ((todayTotal - lastWeekTotal) / lastWeekTotal) * 100 : null;
 
-    const curTotalTarget = accounts.reduce((s, a) => s + (curMonthTargets[a.id] || 0), 0);
-    const dailyTargetTodayTotal = curTotalTarget > 0 ? curTotalTarget / curDim : 0;
+    const curTotalTarget = accounts.reduce((s, a) => s + (refMonthTargets[a.id] || 0), 0);
+    const dailyTargetTodayTotal = curTotalTarget > 0 ? curTotalTarget / refDim : 0;
     const pencapaianHariIniTotal = dailyTargetTodayTotal > 0 && hasToday ? (todayTotal / dailyTargetTodayTotal) * 100 : null;
     const pencapaianKemarinTotal = dailyTargetTodayTotal > 0 && hasYest ? (yestTotal / dailyTargetTodayTotal) * 100 : null;
     const achievementDiffPtsTotal = pencapaianHariIniTotal !== null && pencapaianKemarinTotal !== null ? pencapaianHariIniTotal - pencapaianKemarinTotal : null;
@@ -1096,8 +1104,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       pencapaianHariIniTotal, pencapaianKemarinTotal, achievementDiffPtsTotal, achievementTrendTotal,
       lastMonthMtd, lastMonthTarget, lastMonthPct, lastMonthYM, mtdVsLastMonth,
       totalOrders, lastMonthOrders, ordersVsLast, hasOrdersData,
+      refDate,
     };
-  }, [accounts, targets, entries, selectedMonth, monthMeta, viewDates, periodMode]);
+  }, [accounts, targets, entries, selectedMonth, monthMeta, viewDates, periodMode, selectedDate, customStartDate, customEndDate]);
 
   const insights = useMemo(() => combineInsights(accounts, targets, entries, benchmarks), [accounts, targets, entries, benchmarks]);
 
@@ -1271,11 +1280,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, [liveSessionsForMonth]);
 
   // Rating & Followers adalah metrik "snapshot" (bukan akumulasi harian seperti GMV) — yang
-  // dibandingkan adalah nilai hari ini vs persis nilai kemarin, konsisten dengan definisi
-  // "Hari Ini"/"Kemarin" dashboard ini (effectiveToday, H-1 dari tanggal kalender asli).
+  // dibandingkan adalah nilai pada refDate vs persis nilai sehari sebelumnya. refDate mengikuti
+  // mode periode: hari ini sungguhan (mode Bulanan), atau tanggal yang dipilih user (mode
+  // Harian/Custom) — supaya konsisten dengan tabel Perbandingan Harian di atasnya.
   const growthMetrics = useMemo(() => {
-    const td = todayStr();
-    const yd = ymd(addDays(effectiveToday(), -1));
+    const td = overview.refDate;
+    const yd = ymd(addDays(new Date(td), -1));
     return accounts.map((acc) => {
       const todayRating = entries[td]?.[acc.id]?.rating;
       const yestRating = entries[yd]?.[acc.id]?.rating;
@@ -1285,7 +1295,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       const dFollowers = (todayFollowers !== undefined && yestFollowers !== undefined) ? todayFollowers - yestFollowers : null;
       return { ...acc, todayRating, yestRating, dRating, todayFollowers, yestFollowers, dFollowers };
     });
-  }, [accounts, entries]);
+  }, [accounts, entries, overview.refDate]);
 
   /* ---------- handlers: daily form ---------- */
   const updateDraftField = (accId, field, value) => {
@@ -2188,8 +2198,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* day-over-day */}
           <Card>
-            <SectionTitle eyebrow="Update Hari Ini" title="Perbandingan Harian" />
-            <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>"Hari Ini" di bawah ini merujuk ke <b>{todayLabelLong()}</b> (H-1 dari tanggal kalender asli) — data marketplace baru final keesokan harinya, jadi "Kemarin" = {new Date(addDays(effectiveToday(), -1)).toLocaleDateString("id-ID", { day: "2-digit", month: "short" })} dan seterusnya bergeser satu hari.</div>
+            <SectionTitle eyebrow={periodMode === "month" ? "Update Hari Ini" : `Data untuk ${new Date(overview.refDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}`} title="Perbandingan Harian" />
+            <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>
+              {periodMode === "month"
+                ? <>"Hari Ini" di bawah ini merujuk ke <b>{todayLabelLong()}</b> (H-1 dari tanggal kalender asli) — data marketplace baru final keesokan harinya, jadi "Kemarin" = {new Date(addDays(effectiveToday(), -1)).toLocaleDateString("id-ID", { day: "2-digit", month: "short" })} dan seterusnya bergeser satu hari.</>
+                : <>Tabel di bawah ini mengikuti tanggal yang kamu pilih di atas: <b>{new Date(overview.refDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</b> — "Kemarin" = sehari sebelum tanggal itu, "Minggu Lalu" = 7 hari sebelumnya.</>}
+            </div>
             <div className="flex flex-wrap gap-6 mb-4">
               <div>
                 <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Hari Ini (Semua Akun)</div>
@@ -2245,7 +2259,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* rating */}
           <Card accent={PALETTE.brand2}>
-            <SectionTitle eyebrow="Update Hari Ini" title="Rating Toko" />
+            <SectionTitle eyebrow={periodMode === "month" ? "Update Hari Ini" : new Date(overview.refDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })} title="Rating Toko" />
             <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>Angka snapshot (bukan akumulasi harian) — yang dibandingkan adalah nilai hari ini vs persis nilai kemarin.</div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[360px]">
@@ -2271,7 +2285,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* followers */}
           <Card accent={PALETTE.plum}>
-            <SectionTitle eyebrow="Update Hari Ini" title="Followers Toko" />
+            <SectionTitle eyebrow={periodMode === "month" ? "Update Hari Ini" : new Date(overview.refDate).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })} title="Followers Toko" />
             <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>Angka snapshot (bukan akumulasi harian) — yang dibandingkan adalah nilai hari ini vs persis nilai kemarin.</div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[360px]">
