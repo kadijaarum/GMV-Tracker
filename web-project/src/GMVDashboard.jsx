@@ -78,7 +78,18 @@ const SOURCE_FIELD_META = {
   kartuProduk: { label: "Kartu Produk", color: "#06B6D4" },
 };
 
-const ACCOUNT_COLORS = ["#7C3AED", "#EC4899", "#F59E0B", "#10B981", "#06B6D4", "#F43F5E", "#6366F1"];
+const ACCOUNT_COLORS = ["#7C3AED", "#EC4899", "#F59E0B", "#10B981", "#06B6D4", "#F43F5E", "#6366F1", "#0EA5E9", "#84CC16", "#D946EF", "#F97316", "#14B8A6"];
+
+// Generate id baru yang unik untuk akun tambahan (di luar 7 akun default tt1-tt6+shopee).
+// Pola: tt7, tt8, ... untuk TikTok Shop tambahan; shopee2, shopee3, ... untuk Shopee tambahan.
+function generateAccountId(platform, existingAccounts) {
+  const prefix = platform === "shopee" ? "shopee" : "tt";
+  let n = platform === "shopee" ? 2 : 1;
+  const existingIds = new Set(existingAccounts.map((a) => a.id));
+  if (platform === "shopee" && !existingIds.has("shopee")) return "shopee";
+  while (existingIds.has(platform === "shopee" ? `${prefix}${n}` : `${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
 
 // Identitas visual khusus Live Tracker — sengaja beda dari brand utama (violet/fuchsia)
 // supaya orang yang isi data langsung sadar ini bukan form Input Data GMV biasa.
@@ -192,6 +203,13 @@ const SEVERITY_META = {
 
 const CFG_KEY = "gmv-dashboard-config-v1";
 const EXPORTED_YEARS_KEY = "gmv-dashboard-exported-years-v1";
+// Toko yang HANYA dijadwalkan di Live Tracker — tidak ikut tracking GMV harian (Input Data,
+// Target, Sumber GMV, Performa Iklan). Terpisah total dari DEFAULT_ACCOUNTS.
+const LIVE_ONLY_ACCOUNTS_KEY = "gmv-dashboard-live-only-accounts-v1";
+const DEFAULT_LIVE_ONLY_ACCOUNTS = [
+  { id: "pompurin", name: "Pompurin", platform: "shopee", color: "#0EA5E9" },
+  { id: "star", name: "Star", platform: "shopee", color: "#D946EF" },
+];
 // Catatan kebijakan: riwayat revisi TIDAK PERNAH dipangkas/dihapus otomatis.
 // Data hanya terhapus lewat aksi manual eksplisit oleh Admin di tab Target & Akun.
 // (entries/targets/revisions disimpan per-akun lewat storageAdapter.js, bukan blob tunggal —
@@ -240,12 +258,13 @@ const fmtRating = (n) => (n === undefined || n === null ? "" : Number(n).toFixed
 const isTwinDate = (dateStr) => { const d = new Date(dateStr); return d.getDate() === d.getMonth() + 1 && d.getDate() <= 12; };
 const isPaydayWindow = (dateStr) => { const day = new Date(dateStr).getDate(); return day >= 25 || day <= 5; };
 
-function genMonthOptions(entries, targets) {
+function genMonthOptions(entries, targets, liveSessions) {
   const now = new Date(); const opts = new Set();
   for (let off = 1; off >= -36; off--) opts.add(ym(new Date(now.getFullYear(), now.getMonth() + off, 1)));
   // Pastikan bulan mana pun yang sudah punya data tetap bisa dipilih, walau lebih lama dari 36 bulan.
   Object.keys(entries || {}).forEach((d) => opts.add(d.slice(0, 7)));
   Object.keys(targets || {}).forEach((m) => opts.add(m));
+  (liveSessions || []).forEach((s) => { if (s.date) opts.add(s.date.slice(0, 7)); });
   return Array.from(opts).sort().reverse();
 }
 
@@ -663,8 +682,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   // ---- Live Tracker: state terpisah total dari Input Data GMV (sengaja tidak digabung) ----
   const [liveSessions, setLiveSessions] = useState([]);
+  // Toko yang HANYA perlu dijadwalkan live-nya, tidak ikut tracking GMV harian sama sekali —
+  // makanya disimpan terpisah dari `accounts` (yang dipakai Input Data/Target/Sumber GMV/Iklan).
+  const [liveOnlyAccounts, setLiveOnlyAccounts] = useState([]);
+  const [newLiveAccountName, setNewLiveAccountName] = useState("");
+  const [newLiveAccountPlatform, setNewLiveAccountPlatform] = useState("shopee");
   const [liveDraft, setLiveDraft] = useState({ accountId: "", date: todayStr(), hostName: "", startTime: "", endTime: "", orders: "", directGmv: "", totalViewers: "", co: "", ctr: "", gpm: "" });
   const [liveFilterMonth, setLiveFilterMonth] = useState(todayYM());
+  const [liveFilterAccount, setLiveFilterAccount] = useState("all");
+  const [liveFilterHost, setLiveFilterHost] = useState("all");
   const [liveSavedFlash, setLiveSavedFlash] = useState(false);
 
   const [hiddenAccounts, setHiddenAccounts] = useState(new Set());
@@ -687,10 +713,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     (async () => {
       const ok = typeof window !== "undefined" && !!window.storage;
       setStorageOk(ok);
-      const [cfg, expYears, savedAdBudgets] = await Promise.all([
+      const [cfg, expYears, savedAdBudgets, savedLiveOnlyAccounts] = await Promise.all([
         safeGet(CFG_KEY, null),
         safeGet(EXPORTED_YEARS_KEY, {}),
         safeGet("gmv-dashboard-adbudgets-v1", {}),
+        safeGet(LIVE_ONLY_ACCOUNTS_KEY, null),
       ]);
       const finalCfg = cfg || { accounts: DEFAULT_ACCOUNTS, benchmarks: { targetROAS: 0, targetCR: 0 } };
       setAccounts(finalCfg.accounts);
@@ -701,13 +728,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       setAdBudgets(savedAdBudgets);
       if (!cfg && ok) await safeSet(CFG_KEY, finalCfg);
 
+      const finalLiveOnly = savedLiveOnlyAccounts || DEFAULT_LIVE_ONLY_ACCOUNTS;
+      setLiveOnlyAccounts(finalLiveOnly);
+      if (!savedLiveOnlyAccounts && ok) await safeSet(LIVE_ONLY_ACCOUNTS_KEY, finalLiveOnly);
+
       const accountIds = finalCfg.accounts.map((a) => a.id);
+      const liveAccountIds = [...accountIds, ...finalLiveOnly.map((a) => a.id)];
       try {
         const [ent, tgt, rev, live] = await Promise.all([
           fetchAllEntries(accountIds),
           fetchAllTargets(accountIds),
           fetchAllRevisions(),
-          fetchAllLiveSessions(accountIds),
+          fetchAllLiveSessions(liveAccountIds),
         ]);
         setEntries(ent);
         setTargets(tgt);
@@ -726,6 +758,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     setAdBudgetDraft(adBudgets[selectedMonth] || {});
   }, [selectedMonth, targets, adBudgets]);
   useEffect(() => { setDraft(entries[inputDate] ? { ...entries[inputDate] } : {}); }, [inputDate, entries]);
+  useEffect(() => { setLiveFilterHost("all"); }, [liveFilterAccount, liveFilterMonth]);
 
   const persist = useCallback(async (key, value, setter) => {
     setSaving(true);
@@ -990,12 +1023,25 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, [adPerformance.perAccount]);
 
   // ---- Live Tracker: filter & agregasi (terpisah total dari useMemo Input Data GMV) ----
+  // Gabungan toko yang ditrack GMV (accounts) + toko khusus Live (liveOnlyAccounts) — ini yang
+  // dipakai sebagai pilihan "Nama Toko" di form Live Tracker & filter laporan, BUKAN `accounts`
+  // saja, supaya Pompurin/Star (yang tidak ikut GMV) tetap bisa dipilih di sini.
+  const liveAccountOptions = useMemo(() => [...accounts, ...liveOnlyAccounts], [accounts, liveOnlyAccounts]);
+
+  // Opsi host yang ditampilkan di dropdown — dihitung dari sesi yang sudah disaring bulan+toko
+  // (BELUM disaring host), supaya daftar host yang muncul relevan dengan filter toko yang dipilih.
+  const liveHostOptions = useMemo(() => {
+    const pool = liveSessions.filter((s) => s.date && s.date.startsWith(liveFilterMonth) && (liveFilterAccount === "all" || s.accountId === liveFilterAccount));
+    return Array.from(new Set(pool.map((s) => s.hostName).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [liveSessions, liveFilterMonth, liveFilterAccount]);
+
   const liveSessionsForMonth = useMemo(() => {
     return liveSessions
       .filter((s) => s.date && s.date.startsWith(liveFilterMonth))
-      .filter((s) => isAdmin || s.accountId === myAccountId || true) // semua orang bisa LIHAT, cuma yang bisa EDIT dibatasi di UI/rules
+      .filter((s) => liveFilterAccount === "all" || s.accountId === liveFilterAccount)
+      .filter((s) => liveFilterHost === "all" || s.hostName === liveFilterHost)
       .sort((a, b) => (b.date + (b.startTime || "")).localeCompare(a.date + (a.startTime || "")));
-  }, [liveSessions, liveFilterMonth, isAdmin, myAccountId]);
+  }, [liveSessions, liveFilterMonth, liveFilterAccount, liveFilterHost]);
 
   const liveStats = useMemo(() => {
     const sessions = liveSessionsForMonth;
@@ -1265,9 +1311,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const updateLiveDraftField = (field, value) => setLiveDraft((prev) => ({ ...prev, [field]: value }));
 
   const saveLiveSessionEntry = async () => {
-    const acc = accounts.find((a) => a.id === liveDraft.accountId);
+    const acc = liveAccountOptions.find((a) => a.id === liveDraft.accountId);
     if (!acc) { showToast("error", "Pilih toko dulu sebelum simpan sesi live."); return; }
-    if (!isAdmin && acc.id !== myAccountId) { showToast("error", "Kamu cuma bisa input sesi live untuk tokomu sendiri."); return; }
     if (!liveDraft.date || !liveDraft.hostName.trim()) { showToast("error", "Tanggal dan Nama Host wajib diisi."); return; }
 
     setSaving(true);
@@ -1303,7 +1348,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   };
 
   const removeLiveSession = async (session) => {
-    if (!isAdmin && session.accountId !== myAccountId) return;
     if (!window.confirm(`Hapus sesi live ${session.accountName} — ${session.hostName} (${session.date})? Tindakan ini tidak bisa dibatalkan.`)) return;
     setSaving(true);
     try {
@@ -1314,6 +1358,99 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     } catch (e) {
       setSaving(false);
       showToast("error", `Gagal menghapus: ${e.message || "cek koneksi / izin akun"}.`);
+    }
+  };
+
+  const exportLiveReport = () => {
+    if (liveSessionsForMonth.length === 0) {
+      showToast("error", "Tidak ada data untuk diexport pada filter ini.");
+      return;
+    }
+    try {
+      const rows = liveSessionsForMonth.map((s) => ({
+        Date: s.date,
+        "Nama Toko": s.accountName,
+        Platform: s.platform === "shopee" ? "Shopee" : "TikTok Shop",
+        "Nama HOST": s.hostName,
+        "Start Live": s.startTime || "",
+        "End Live": s.endTime || "",
+        "Live Hours": fmtHours(calcLiveHours(s.startTime, s.endTime)),
+        Orders: s.orders ?? "",
+        "Direct GMV": s.directGmv ?? "",
+        "Total Viewers": s.totalViewers ?? "",
+        "CO (%)": s.co ?? "",
+        "CTR (%)": s.ctr ?? "",
+        GPM: s.gpm ?? "",
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Laporan Live");
+
+      const summaryRows = [
+        { Metrik: "Total Sesi", Nilai: liveStats.totalSessions },
+        { Metrik: "Total Direct GMV", Nilai: liveStats.totalGmv },
+        { Metrik: "Total Orders", Nilai: liveStats.totalOrders },
+        { Metrik: "Total Jam Live", Nilai: fmtHours(liveStats.totalHours) },
+        { Metrik: "Rata-rata CO%", Nilai: liveStats.avgCo !== null ? liveStats.avgCo.toFixed(1) : "—" },
+        { Metrik: "Rata-rata CTR%", Nilai: liveStats.avgCtr !== null ? liveStats.avgCtr.toFixed(1) : "—" },
+        { Metrik: "Rata-rata GPM", Nilai: liveStats.avgGpm !== null ? Math.round(liveStats.avgGpm) : "—" },
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), "Ringkasan");
+
+      const accLabel = liveFilterAccount === "all" ? "SemuaToko" : (liveAccountOptions.find((a) => a.id === liveFilterAccount)?.name || liveFilterAccount).replace(/\s+/g, "");
+      const hostLabel = liveFilterHost === "all" ? "" : `-${liveFilterHost.replace(/\s+/g, "")}`;
+      XLSX.writeFile(wb, `Laporan-Live-${liveFilterMonth}-${accLabel}${hostLabel}.xlsx`);
+      showToast("success", "Laporan Live berhasil diexport.");
+    } catch (e) {
+      showToast("error", `Export gagal: ${e.message || "coba lagi"}.`);
+    }
+  };
+
+  const addLiveOnlyAccount = async () => {
+    if (!isAdmin) return;
+    const trimmedName = newLiveAccountName.trim();
+    if (!trimmedName) { showToast("error", "Nama toko wajib diisi."); return; }
+    const combined = [...accounts, ...liveOnlyAccounts];
+    if (combined.some((a) => a.name.toLowerCase() === trimmedName.toLowerCase())) {
+      showToast("error", `"${trimmedName}" sudah ada di daftar toko.`);
+      return;
+    }
+    const baseSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    let newId = `live_${baseSlug}`;
+    let suffix = 2;
+    const existingIds = new Set(combined.map((a) => a.id));
+    while (existingIds.has(newId)) { newId = `live_${baseSlug}_${suffix}`; suffix++; }
+    const usedColors = new Set(combined.map((a) => a.color));
+    const color = ACCOUNT_COLORS.find((c) => !usedColors.has(c)) || ACCOUNT_COLORS[combined.length % ACCOUNT_COLORS.length];
+    const newAccount = { id: newId, name: trimmedName, platform: newLiveAccountPlatform, color };
+    setSaving(true);
+    try {
+      const next = [...liveOnlyAccounts, newAccount];
+      await safeSet(LIVE_ONLY_ACCOUNTS_KEY, next);
+      setLiveOnlyAccounts(next);
+      setNewLiveAccountName("");
+      setSaving(false);
+      showToast("success", `"${trimmedName}" ditambahkan ke daftar toko Live Tracker.`);
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal menambah toko: ${e.message || "cek koneksi"}.`);
+    }
+  };
+
+  const removeLiveOnlyAccount = async (accountId) => {
+    if (!isAdmin) return;
+    const acc = liveOnlyAccounts.find((a) => a.id === accountId);
+    if (!acc) return;
+    if (!window.confirm(`Hapus "${acc.name}" dari daftar toko Live Tracker? Sesi live yang sudah tercatat untuk toko ini TIDAK ikut terhapus, tapi nama tokonya tidak akan muncul lagi di pilihan toko baru.`)) return;
+    setSaving(true);
+    try {
+      const next = liveOnlyAccounts.filter((a) => a.id !== accountId);
+      await safeSet(LIVE_ONLY_ACCOUNTS_KEY, next);
+      setLiveOnlyAccounts(next);
+      setSaving(false);
+      showToast("success", `"${acc.name}" dihapus dari daftar toko Live Tracker.`);
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal menghapus: ${e.message || "cek koneksi"}.`);
     }
   };
 
@@ -1334,6 +1471,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const fillFullShopNames = () => {
     setAccountDraft((prev) => prev.map((a) => ({ ...a, name: FULL_SHOP_NAMES[a.id] || a.name })));
   };
+
   /* ---------- handlers: rekap tahunan & hapus data ---------- */
   const yearsWithData = useMemo(() => {
     const ys = new Set();
@@ -1536,7 +1674,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     }
   };
 
-  const monthOptions = useMemo(() => genMonthOptions(entries, targets), [entries, targets]);
+  const monthOptions = useMemo(() => genMonthOptions(entries, targets, liveSessions), [entries, targets, liveSessions]);
 
   if (loading) {
     return (
@@ -2563,13 +2701,22 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 <select value={liveDraft.accountId} onChange={(e) => updateLiveDraftField("accountId", e.target.value)}
                   className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }}>
                   <option value="">Pilih toko…</option>
-                  {accounts.filter((a) => isAdmin || a.id === myAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  {accounts.filter((a) => isAdmin || a.id === myAccountId).length > 0 && (
+                    <optgroup label="Toko GMV">
+                      {accounts.filter((a) => isAdmin || a.id === myAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </optgroup>
+                  )}
+                  {liveOnlyAccounts.length > 0 && (
+                    <optgroup label="Toko Khusus Live (tanpa GMV)">
+                      {liveOnlyAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </optgroup>
+                  )}
                 </select>
               </div>
               <div>
                 <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Platform</label>
                 <div className="text-sm px-2.5 py-1.5 rounded border" style={{ borderColor: LIVE_ACCENT_SOFT, background: PALETTE.panelAlt, color: PALETTE.inkSoft }}>
-                  {accounts.find((a) => a.id === liveDraft.accountId)?.platform === "shopee" ? "Shopee" : accounts.find((a) => a.id === liveDraft.accountId) ? "TikTok Shop" : "—"}
+                  {liveAccountOptions.find((a) => a.id === liveDraft.accountId)?.platform === "shopee" ? "Shopee" : liveAccountOptions.find((a) => a.id === liveDraft.accountId) ? "TikTok Shop" : "—"}
                 </div>
               </div>
               <div>
@@ -2645,14 +2792,80 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </button>
           </Card>
 
-          {/* filter bulan + hero stats */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold" style={{ color: PALETTE.inkSoft }}>Tampilkan bulan:</span>
-            <select value={liveFilterMonth} onChange={(e) => setLiveFilterMonth(e.target.value)}
-              className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
-              {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>)}
-            </select>
-          </div>
+          {isAdmin && (
+            <Card>
+              <SectionTitle eyebrow="Khusus Live Tracker — tidak ikut tracking GMV" title="Kelola Toko Live-Only" />
+              <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>Toko di sini cuma muncul sebagai pilihan di form Live Tracker — tidak akan muncul di Input Data, Target, Sumber GMV, atau Performa Iklan.</div>
+              <div className="flex items-end gap-2 flex-wrap mb-4 p-3 rounded-xl" style={{ background: PALETTE.panelAlt }}>
+                <div className="flex-1 min-w-[160px]">
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama Toko Baru</label>
+                  <input type="text" value={newLiveAccountName} onChange={(e) => setNewLiveAccountName(e.target.value)} placeholder="contoh: Pompurin"
+                    className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT, background: PALETTE.panel }} />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Platform</label>
+                  <select value={newLiveAccountPlatform} onChange={(e) => setNewLiveAccountPlatform(e.target.value)}
+                    className="text-sm px-2.5 py-1.5 rounded border outline-none" style={{ borderColor: LIVE_ACCENT_SOFT, background: PALETTE.panel }}>
+                    <option value="shopee">Shopee</option>
+                    <option value="tiktok">TikTok Shop</option>
+                  </select>
+                </div>
+                <button onClick={addLiveOnlyAccount} disabled={saving} className={`${btnClass} flex items-center gap-1.5`} style={{ background: `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})`, color: "#fff", opacity: saving ? 0.7 : 1 }}>
+                  <PlusCircle size={14} />Tambah Toko
+                </button>
+              </div>
+              {liveOnlyAccounts.length === 0 ? (
+                <div className="text-sm py-2" style={{ color: PALETTE.inkFaint }}>Belum ada toko khusus Live.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {liveOnlyAccounts.map((a) => (
+                    <div key={a.id} className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: PALETTE.panelAlt }}>
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: a.color }} />
+                      <span className="text-sm font-medium flex-1">{a.name}</span>
+                      <PlatformTag platform={a.platform} />
+                      <button onClick={() => removeLiveOnlyAccount(a.id)} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.coral }} title="Hapus toko ini">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {/* filter laporan: bulan, toko, host + export */}
+          <Card>
+            <SectionTitle title="Filter Laporan" />
+            <div className="flex items-end gap-2 flex-wrap mb-3">
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Bulan</label>
+                <select value={liveFilterMonth} onChange={(e) => setLiveFilterMonth(e.target.value)}
+                  className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
+                  {monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Toko</label>
+                <select value={liveFilterAccount} onChange={(e) => setLiveFilterAccount(e.target.value)}
+                  className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
+                  <option value="all">Semua Toko</option>
+                  {liveAccountOptions.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama Host</label>
+                <select value={liveFilterHost} onChange={(e) => setLiveFilterHost(e.target.value)}
+                  className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel }}>
+                  <option value="all">Semua Host</option>
+                  {liveHostOptions.map((h) => <option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+              <button onClick={exportLiveReport} className={`${btnClass} flex items-center gap-1.5`} style={btnPrimaryStyle(LIVE_ACCENT, LIVE_ACCENT_DEEP)}>
+                <FileSpreadsheet size={14} />Export Laporan (.xlsx)
+              </button>
+            </div>
+            <div className="text-[11px]" style={{ color: PALETTE.inkFaint }}>Laporan mengikuti filter Bulan + Toko + Host di atas — kosongkan ke "Semua" untuk laporan menyeluruh, atau pilih spesifik untuk laporan per-toko atau per-host.</div>
+          </Card>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <Card accent={LIVE_ACCENT}>
@@ -2741,12 +2954,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                   </thead>
                   <tbody>
                     {liveSessionsForMonth.map((s) => {
-                      const canEdit = isAdmin || s.accountId === myAccountId;
+                      const canEdit = true; // semua yang login boleh kelola data Live Tracker (beda dari GMV yang dibatasi per-toko)
                       const hrs = calcLiveHours(s.startTime, s.endTime);
                       return (
-                        <tr key={s.id} className="border-t" style={{ borderColor: PALETTE.line, opacity: canEdit ? 1 : 0.7 }}>
+                        <tr key={s.id} className="border-t" style={{ borderColor: PALETTE.line }}>
                           <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.date}</td>
-                          <td className="py-2 pr-3"><div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full" style={{ background: accounts.find((a) => a.id === s.accountId)?.color || PALETTE.inkFaint }} />{s.accountName}<PlatformTag platform={s.platform} /></div></td>
+                          <td className="py-2 pr-3"><div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full" style={{ background: liveAccountOptions.find((a) => a.id === s.accountId)?.color || PALETTE.inkFaint }} />{s.accountName}<PlatformTag platform={s.platform} /></div></td>
                           <td className="py-2 pr-3 font-medium">{s.hostName}</td>
                           <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.startTime || "—"}</td>
                           <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{s.endTime || "—"}</td>
@@ -2842,6 +3055,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               <SectionTitle title="Nama Akun & Benchmark" right={
                 <button onClick={fillFullShopNames} className="text-xs flex items-center gap-1 px-2.5 py-1.5 rounded border" style={{ borderColor: PALETTE.line, color: PALETTE.inkSoft }}><Copy size={12} />Isi Nama Lengkap Toko</button>
               } />
+              <div className="text-[11px] mb-3" style={{ color: PALETTE.inkFaint }}>Daftar di bawah ini khusus toko yang ditrack GMV harian-nya (Input Data, Target, Sumber GMV, Performa Iklan). Untuk toko yang cuma perlu dijadwalkan live-nya tanpa tracking GMV, tambahkan di tab <b>Live Tracker</b> langsung.</div>
+
               <div className="space-y-2 mb-4">
                 {accountDraft.map((acc, idx) => (
                   <div key={acc.id} className="flex items-center gap-2">

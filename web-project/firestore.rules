@@ -31,11 +31,13 @@ service cloud.firestore {
       allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
     }
 
-    // Sesi Live harian per akun (host, jam mulai/selesai, orders, GMV, viewers, dll).
-    // Sama pola dengan entries: akun toko cuma boleh tulis ke folder akunnya sendiri.
+    // Sesi Live (host, jam mulai/selesai, orders, GMV, viewers, dll). BEDA dari entries/targets:
+    // siapa pun yang login boleh tulis ke toko APA PUN di sini (bukan cuma toko sendiri) — karena
+    // Live Tracker juga dipakai untuk toko "khusus live" (mis. Pompurin, Star) yang tidak punya
+    // login terkait sama sekali, jadi pembatasan per-myAccountId() tidak relevan di koleksi ini.
     match /liveSessions/{accountId}/sessions/{sessionId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && (isAdmin() || myAccountId() == accountId);
+      allow write: if isSignedIn();
     }
 
     // Riwayat revisi — append-only. Akun toko cuma boleh menambah record dengan
