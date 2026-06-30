@@ -1197,15 +1197,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     return { perAccount, totalSpend, totalRevenue, totalOrders, totalBudgetPerHari, overallRoas, overallCpa, overallRoi, totalDaysWithAdData, chartData, dim };
   }, [accounts, entries, adBudgets, viewDates, periodMode, selectedMonth]);
 
-  const adRanking = useMemo(() => {
-    return [...adPerformance.perAccount].sort((a, b) => {
-      const aHas = a.roas !== null, bHas = b.roas !== null;
-      if (aHas !== bHas) return aHas ? -1 : 1;
-      if (aHas && bHas && b.roas !== a.roas) return b.roas - a.roas;
-      return b.spend - a.spend;
-    });
-  }, [adPerformance.perAccount]);
-
   // ---- Live Tracker: filter & agregasi (terpisah total dari useMemo Input Data GMV) ----
   // Gabungan toko yang ditrack GMV (accounts) + toko khusus Live (liveOnlyAccounts) — ini yang
   // dipakai sebagai pilihan "Nama Toko" di form Live Tracker & filter laporan, BUKAN `accounts`
@@ -2127,7 +2118,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </Card>
           )}
 
-          {/* leaderboard ranking pencapaian toko */}
+          {/* leaderboard ranking pencapaian toko — disembunyikan khusus mode custom */}
+          {periodMode !== "custom" && (
           <Card>
             <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target ${periodMode !== "month" ? "Proporsional" : ""}`} title="Ranking Pencapaian Toko" />
             <div className="space-y-2.5">
@@ -2192,6 +2184,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               {periodMode !== "month" ? `Ranking berdasarkan % GMV periode ini vs target proporsional (target bulanan ÷ ${monthMeta.dim} hari × ${viewDates.length} hari di periode ini). Toko tanpa target diurutkan berdasarkan GMV mentah.` : "Diurutkan dari % pencapaian target MTD tertinggi. Toko tanpa target disusun di bawah berdasarkan GMV mentah."}
             </div>
           </Card>
+          )}
 
           {/* day-over-day */}
           <Card>
@@ -2773,38 +2766,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>Atur di bawah ↓</div>
             </Card>
           </div>
-
-          {/* leaderboard ROAS */}
-          <Card>
-            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut ROAS`} title="Ranking ROAS Toko" />
-            <div className="space-y-2.5">
-              {adRanking.map((acc, idx) => {
-                const [bandFrom, bandTo] = rankBandColors(idx);
-                const hasRoas = acc.roas !== null;
-                const isLosing = hasRoas && acc.roas < 1;
-                return (
-                  <div key={acc.id} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
-                    <div className="flex items-center gap-2 px-3 py-3 shrink-0 w-32 sm:w-44" style={{ background: PALETTE.panel, borderTop: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, borderLeft: `1px solid ${PALETTE.line}` }}>
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: acc.color }} />
-                      <span className="text-xs sm:text-sm font-bold truncate">{acc.name}</span>
-                    </div>
-                    <div className="flex-1 flex items-center justify-between gap-3 px-4 py-3" style={{ background: isLosing ? `linear-gradient(110deg, ${PALETTE.coralDeep}, ${PALETTE.coral})` : `linear-gradient(110deg, ${bandFrom}, ${bandTo})` }}>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {idx === 0 && !isLosing ? <Trophy size={22} className="text-white drop-shadow" /> : idx <= 2 && !isLosing ? <Medal size={20} className="text-white/90" /> : null}
-                        <span className="text-white/85 text-[10px] sm:text-xs font-bold uppercase tracking-wide">Rank</span>
-                        <span className="text-white font-black text-2xl sm:text-3xl leading-none" style={{ fontFamily: "'Sora', sans-serif", textShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>{idx + 1}</span>
-                        {isLosing && <span className="text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,0.25)" }}>RUGI</span>}
-                      </div>
-                      <div className="text-right">
-                        <div className="text-white font-extrabold text-lg sm:text-xl leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{hasRoas ? acc.roas.toFixed(2) : "—"}</div>
-                        <div className="text-white/80 text-[10px] sm:text-[11px] mt-0.5">{hasRoas ? `${fmtCompactRp(acc.revenue)} / ${fmtCompactRp(acc.spend)}` : "Belum ada data iklan"}</div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
 
           {/* trend ROAS */}
           <Card>
