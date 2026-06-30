@@ -632,6 +632,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
   const [benchmarks, setBenchmarks] = useState({ targetROAS: 0, targetCR: 0 });
   const [targets, setTargets] = useState({});
+  const [adBudgets, setAdBudgets] = useState({}); // { [ym]: { [accId]: budgetPerHari } }
   const [entries, setEntries] = useState({});
   const [revisions, setRevisions] = useState([]);
   const [showAllRevisions, setShowAllRevisions] = useState(false);
@@ -649,6 +650,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [toast, setToast] = useState(null); // { type: 'success' | 'error', message: string }
 
   const [targetDraft, setTargetDraft] = useState({});
+  const [adBudgetDraft, setAdBudgetDraft] = useState({});
   const [accountDraft, setAccountDraft] = useState(DEFAULT_ACCOUNTS);
   const [benchmarkDraft, setBenchmarkDraft] = useState({ targetROAS: 0, targetCR: 0 });
 
@@ -657,9 +659,10 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     (async () => {
       const ok = typeof window !== "undefined" && !!window.storage;
       setStorageOk(ok);
-      const [cfg, expYears] = await Promise.all([
+      const [cfg, expYears, savedAdBudgets] = await Promise.all([
         safeGet(CFG_KEY, null),
         safeGet(EXPORTED_YEARS_KEY, {}),
+        safeGet("gmv-dashboard-adbudgets-v1", {}),
       ]);
       const finalCfg = cfg || { accounts: DEFAULT_ACCOUNTS, benchmarks: { targetROAS: 0, targetCR: 0 } };
       setAccounts(finalCfg.accounts);
@@ -667,6 +670,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       setAccountDraft(finalCfg.accounts);
       setBenchmarkDraft(finalCfg.benchmarks);
       setExportedYears(expYears);
+      setAdBudgets(savedAdBudgets);
       if (!cfg && ok) await safeSet(CFG_KEY, finalCfg);
 
       const accountIds = finalCfg.accounts.map((a) => a.id);
@@ -687,7 +691,10 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, []);
 
   // ---- sync drafts when month or data changes ----
-  useEffect(() => { setTargetDraft(targets[selectedMonth] || {}); }, [selectedMonth, targets]);
+  useEffect(() => {
+    setTargetDraft(targets[selectedMonth] || {});
+    setAdBudgetDraft(adBudgets[selectedMonth] || {});
+  }, [selectedMonth, targets, adBudgets]);
   useEffect(() => { setDraft(entries[inputDate] ? { ...entries[inputDate] } : {}); }, [inputDate, entries]);
 
   const persist = useCallback(async (key, value, setter) => {
@@ -897,6 +904,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   const adPerformance = useMemo(() => {
     const allDatesInMonth = viewDates;
+    const curAdBudgets = adBudgets[selectedMonth] || {};
+    const dim = daysInMonthOf(selectedMonth);
 
     const perAccount = accounts.map((acc) => {
       const spend = sumField(entries, allDatesInMonth, acc.id, "adSpend");
@@ -904,6 +913,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       const orders = sumField(entries, allDatesInMonth, acc.id, "orders");
       const roas = spend > 0 ? revenue / spend : null;
       const cpa = orders > 0 ? spend / orders : null;
+      const roi = spend > 0 ? ((revenue - spend) / spend) * 100 : null;
+      const budgetPerHari = curAdBudgets[acc.id] || 0;
       const daysWithAdData = allDatesInMonth.filter((d) => entries[d]?.[acc.id]?.adSpend !== undefined).length;
 
       const td = todayStr();
@@ -914,14 +925,16 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       const yestRoas = yestSpend > 0 ? yestRevenue / yestSpend : null;
       const dRoas = (todayRoas !== null && yestRoas !== null) ? todayRoas - yestRoas : null;
 
-      return { ...acc, spend, revenue, orders, roas, cpa, daysWithAdData, todayRoas, yestRoas, dRoas };
+      return { ...acc, spend, revenue, orders, roas, cpa, roi, budgetPerHari, daysWithAdData, todayRoas, yestRoas, dRoas };
     });
 
     const totalSpend = perAccount.reduce((s, a) => s + a.spend, 0);
     const totalRevenue = perAccount.reduce((s, a) => s + a.revenue, 0);
     const totalOrders = perAccount.reduce((s, a) => s + a.orders, 0);
+    const totalBudgetPerHari = perAccount.reduce((s, a) => s + a.budgetPerHari, 0);
     const overallRoas = totalSpend > 0 ? totalRevenue / totalSpend : null;
     const overallCpa = totalOrders > 0 ? totalSpend / totalOrders : null;
+    const overallRoi = totalSpend > 0 ? ((totalRevenue - totalSpend) / totalSpend) * 100 : null;
     const totalDaysWithAdData = perAccount.reduce((s, a) => s + a.daysWithAdData, 0);
 
     const chartData = allDatesInMonth.map((date) => {
@@ -934,8 +947,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
-    return { perAccount, totalSpend, totalRevenue, totalOrders, overallRoas, overallCpa, totalDaysWithAdData, chartData };
-  }, [accounts, entries, viewDates, periodMode]);
+    return { perAccount, totalSpend, totalRevenue, totalOrders, totalBudgetPerHari, overallRoas, overallCpa, overallRoi, totalDaysWithAdData, chartData, dim };
+  }, [accounts, entries, adBudgets, viewDates, periodMode, selectedMonth]);
 
   const adRanking = useMemo(() => {
     return [...adPerformance.perAccount].sort((a, b) => {
@@ -1162,6 +1175,22 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     const prevYM = ym(new Date(y, m - 2, 1));
     setTargetDraft(targets[prevYM] || {});
   };
+
+  const saveAdBudgets = async () => {
+    if (!isAdmin) return;
+    setSaving(true);
+    try {
+      const next = { ...adBudgets, [selectedMonth]: { ...(adBudgets[selectedMonth] || {}), ...adBudgetDraft } };
+      setAdBudgets(next);
+      await safeSet("gmv-dashboard-adbudgets-v1", next);
+      setSaving(false);
+      showToast("success", `Budget iklan ${monthLabel(selectedMonth)} berhasil disimpan.`);
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal menyimpan budget: ${e.message || "cek koneksi"}.`);
+    }
+  };
+
   const saveAccountsAndBenchmarks = async () => {
     if (!isAdmin) return;
     setSaving(true);
@@ -1491,19 +1520,41 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           )}
 
           {/* hero stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {periodMode === "day" ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <Card accent={PALETTE.brand} className="flex flex-col justify-between">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Hari Ini</div>
+                <div className="text-2xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(overview.totalMtd)}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{new Date(selectedDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" })}</div>
+              </Card>
+              <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Kemarin</div>
+                <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(overview.lastMonthMtd)}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{new Date(ymd(addDays(new Date(selectedDate), -1))).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" })}</div>
+              </Card>
+              <Card accent={overview.mtdVsLastMonth !== null && overview.mtdVsLastMonth >= 0 ? PALETTE.teal : PALETTE.coral} className="flex flex-col justify-between">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Hari Ini vs Kemarin</div>
+                <DeltaBadge value={overview.mtdVsLastMonth} size="text-2xl" />
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.mtdVsLastMonth === null ? "Belum ada data kemarin" : overview.mtdVsLastMonth >= 0 ? "Lebih baik" : "Di bawah kemarin"}</div>
+              </Card>
+              <Card accent={PALETTE.plum} className="flex flex-col justify-between">
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Orderan</div>
+                <div className="text-2xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{overview.hasOrdersData ? fmtNum(overview.totalOrders) : "—"}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.hasOrdersData && overview.lastMonthOrders > 0 ? `kemarin: ${fmtNum(overview.lastMonthOrders)}` : "order hari ini"}</div>
+              </Card>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <Card accent={PALETTE.brand} className="flex flex-col justify-between">
               <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Ini ({monthMeta.elapsed} hari)</div>
               <div className="text-2xl sm:text-3xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(overview.totalMtd)}</div>
               <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.totalTarget)}</div>
             </Card>
-            {periodMode === "month" && (
-              <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Time Gone</div>
-                <div className="text-2xl font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(overview.timeGonePercent)}%</div>
-                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{monthMeta.elapsed} dari {monthMeta.dim} hari berjalan</div>
-              </Card>
-            )}
+            <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Time Gone</div>
+              <div className="text-2xl font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(overview.timeGonePercent)}%</div>
+              <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{monthMeta.elapsed} dari {monthMeta.dim} hari berjalan</div>
+            </Card>
             <Card accent={STATUS_META[overview.totalStatus]?.color} className="flex flex-col items-center justify-center text-center">
               <Dial percent={overview.pencapaianPercentOverall} color={STATUS_META[overview.totalStatus]?.color} label="Tercapai dari Target" />
               {overview.paceDiff !== null && (
@@ -1541,9 +1592,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 <PointDeltaBadge value={overview.achievementDiffPtsTotal} />
               </div>
             </Card>
+          </div>
+          )} {/* end mode bulanan grid */}
 
-            {/* card perbandingan bulan lalu / hari sebelumnya */}
-            <Card accent={PALETTE.plum} className="sm:col-span-2 lg:col-span-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+          {/* card perbandingan periode sebelumnya — tampil di kedua mode */}
+          <Card accent={PALETTE.plum} className="sm:col-span-2 lg:col-span-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
               <div className="flex-1">
                 <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
                   {periodMode === "day" ? "GMV Hari Sebelumnya" : "GMV Bulan Lalu"}{" "}
@@ -1596,10 +1649,26 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
           {/* leaderboard ranking pencapaian toko */}
           <Card>
-            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target`} title="Ranking Pencapaian Toko" />
+            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target ${periodMode === "day" ? "Harian" : ""}`} title="Ranking Pencapaian Toko" />
             <div className="space-y-2.5">
-              {ranking.map((acc, idx) => {
+              {(periodMode === "day" ? [...overview.perAccount].sort((a, b) => {
+                // mode harian: ranking berdasarkan GMV hari ini vs target/hari (target bulanan ÷ jumlah hari sebulan)
+                const dim = monthMeta.dim || 30;
+                const aGmv = entries[selectedDate]?.[a.id]?.gmv || 0;
+                const bGmv = entries[selectedDate]?.[b.id]?.gmv || 0;
+                const aDailyTarget = a.target > 0 ? a.target / dim : 0;
+                const bDailyTarget = b.target > 0 ? b.target / dim : 0;
+                const aPct = aDailyTarget > 0 ? aGmv / aDailyTarget : 0;
+                const bPct = bDailyTarget > 0 ? bGmv / bDailyTarget : 0;
+                if ((aDailyTarget > 0) !== (bDailyTarget > 0)) return aDailyTarget > 0 ? -1 : 1;
+                if (bPct !== aPct) return bPct - aPct;
+                return bGmv - aGmv;
+              }) : ranking).map((acc, idx) => {
                 const [bandFrom, bandTo] = rankBandColors(idx);
+                const dim = monthMeta.dim || 30;
+                const dailyGmv = periodMode === "day" ? (entries[selectedDate]?.[acc.id]?.gmv || 0) : null;
+                const dailyTarget = acc.target > 0 ? acc.target / dim : 0;
+                const dailyPct = dailyTarget > 0 && dailyGmv !== null ? (dailyGmv / dailyTarget) * 100 : null;
                 const hasTarget = acc.target > 0;
                 return (
                   <div key={acc.id} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
@@ -1614,7 +1683,14 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                         <span className="text-white font-black text-2xl sm:text-3xl leading-none" style={{ fontFamily: "'Sora', sans-serif", textShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>{idx + 1}</span>
                       </div>
                       <div className="text-right">
-                        {hasTarget ? (
+                        {periodMode === "day" ? (
+                          <>
+                            <div className="text-white font-extrabold text-lg sm:text-xl leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{dailyPct !== null ? `${Math.round(dailyPct)}%` : fmtCompactRp(dailyGmv)}</div>
+                            <div className="text-white/80 text-[10px] sm:text-[11px] mt-0.5">
+                              {fmtCompactRp(dailyGmv)} / {dailyTarget > 0 ? fmtCompactRp(dailyTarget) : "—"} per hari
+                            </div>
+                          </>
+                        ) : hasTarget ? (
                           <>
                             <div className="text-white font-extrabold text-lg sm:text-xl leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{Math.round(acc.pctTarget)}%</div>
                             <div className="text-white/80 text-[10px] sm:text-[11px] mt-0.5">{fmtCompactRp(acc.mtd)} / {fmtCompactRp(acc.target)}</div>
@@ -1631,7 +1707,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 );
               })}
             </div>
-            <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>Diurutkan dari % pencapaian target MTD tertinggi. Toko tanpa target disusun di bawah berdasarkan GMV mentah.</div>
+            <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>
+              {periodMode === "day" ? `Ranking berdasarkan % GMV hari ini vs target harian (target bulanan ÷ ${monthMeta.dim} hari). Toko tanpa target diurutkan berdasarkan GMV mentah.` : "Diurutkan dari % pencapaian target MTD tertinggi. Toko tanpa target disusun di bawah berdasarkan GMV mentah."}
+            </div>
           </Card>
 
           {/* day-over-day */}
@@ -2178,26 +2256,40 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             )}
           </Card>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             <Card accent={PALETTE.coral}>
               <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Ad Spend</div>
-              <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalSpend)}</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalSpend)}</div>
             </Card>
             <Card accent={PALETTE.teal}>
               <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Ad Revenue</div>
-              <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalRevenue)}</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalRevenue)}</div>
             </Card>
             <Card accent={PALETTE.brand}>
               <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>ROAS Gabungan</div>
-              <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: adPerformance.overallRoas === null ? PALETTE.inkFaint : adPerformance.overallRoas < 1 ? PALETTE.coral : PALETTE.teal }}>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: adPerformance.overallRoas === null ? PALETTE.inkFaint : adPerformance.overallRoas < 1 ? PALETTE.coral : PALETTE.teal }}>
                 {adPerformance.overallRoas !== null ? adPerformance.overallRoas.toFixed(2) : "—"}
               </div>
               {benchmarks.targetROAS > 0 && <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>Target: {benchmarks.targetROAS}</div>}
             </Card>
             <Card accent={PALETTE.plum}>
-              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>CPA Gabungan</div>
-              <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{adPerformance.overallCpa !== null ? fmtCompactRp(adPerformance.overallCpa) : "—"}</div>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Biaya/Pesanan (CPA)</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{adPerformance.overallCpa !== null ? fmtCompactRp(adPerformance.overallCpa) : "—"}</div>
               <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>dari {fmtNum(adPerformance.totalOrders)} orders</div>
+            </Card>
+            <Card accent={adPerformance.overallRoi !== null && adPerformance.overallRoi >= 0 ? PALETTE.teal : PALETTE.coral}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>ROI</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: adPerformance.overallRoi === null ? PALETTE.inkFaint : adPerformance.overallRoi >= 0 ? PALETTE.teal : PALETTE.coral }}>
+                {adPerformance.overallRoi !== null ? `${adPerformance.overallRoi.toFixed(1)}%` : "—"}
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>(Revenue − Spend) / Spend</div>
+            </Card>
+            <Card accent={PALETTE.ochre}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Budget/Hari (Gabungan)</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                {adPerformance.totalBudgetPerHari > 0 ? fmtCompactRp(adPerformance.totalBudgetPerHari) : "—"}
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>Atur di bawah ↓</div>
             </Card>
           </div>
 
@@ -2254,20 +2346,25 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </div>
           </Card>
 
-          {/* detail per akun */}
+          {/* detail per akun + input budget/hari */}
           <Card>
-            <SectionTitle eyebrow="Update Hari Ini" title="Detail per Akun" />
+            <SectionTitle eyebrow={periodLabel} title="Detail & Budget per Akun" />
+            <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>
+              ROI = (Ad Revenue − Ad Spend) ÷ Ad Spend × 100%. Biaya/Pesanan = Ad Spend ÷ Orders. Budget/Hari diisi manual di kolom kanan — disimpan per bulan sebagai acuan harian.
+            </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[700px]">
+              <table className="w-full text-sm min-w-[860px]">
                 <thead>
                   <tr className="text-left" style={{ color: PALETTE.inkSoft }}>
                     <th className="font-medium py-1.5 pr-3">Akun</th>
                     <th className="font-medium py-1.5 pr-3">Ad Spend</th>
                     <th className="font-medium py-1.5 pr-3">Ad Revenue</th>
                     <th className="font-medium py-1.5 pr-3">ROAS</th>
+                    <th className="font-medium py-1.5 pr-3">ROI</th>
+                    <th className="font-medium py-1.5 pr-3">Biaya/Pesanan</th>
                     <th className="font-medium py-1.5 pr-3">ROAS Hari Ini</th>
                     <th className="font-medium py-1.5 pr-3">vs Kemarin</th>
-                    <th className="font-medium py-1.5">CPA</th>
+                    {isAdmin && <th className="font-medium py-1.5">Budget/Hari (Rp)</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -2277,15 +2374,31 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(a.spend)}</td>
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(a.revenue)}</td>
                       <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace", color: a.roas === null ? PALETTE.inkFaint : a.roas < 1 ? PALETTE.coral : PALETTE.teal }}>{a.roas !== null ? a.roas.toFixed(2) : "—"}</td>
+                      <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace", color: a.roi === null ? PALETTE.inkFaint : a.roi >= 0 ? PALETTE.teal : PALETTE.coral }}>{a.roi !== null ? `${a.roi.toFixed(1)}%` : "—"}</td>
+                      <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{a.cpa !== null ? fmtCompactRp(a.cpa) : "—"}</td>
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{a.todayRoas !== null ? a.todayRoas.toFixed(2) : "—"}</td>
                       <td className="py-2 pr-3"><SignedDeltaBadge value={a.dRoas} decimals={2} /></td>
-                      <td className="py-2" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{a.cpa !== null ? fmtCompactRp(a.cpa) : "—"}</td>
+                      {isAdmin && (
+                        <td className="py-2">
+                          <input type="text" inputMode="numeric"
+                            value={adBudgetDraft[a.id] !== undefined ? fmtNum(adBudgetDraft[a.id]) : ""}
+                            onChange={(e) => setAdBudgetDraft((p) => ({ ...p, [a.id]: parseNum(e.target.value) }))}
+                            placeholder="0"
+                            className="text-sm px-2 py-1 rounded border outline-none w-28 text-right"
+                            style={{ borderColor: PALETTE.line, fontFamily: "'JetBrains Mono', monospace" }} />
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>Kolom "ROAS Hari Ini" & "vs Kemarin" memakai definisi "Hari Ini" yang sama seperti di tab Ringkasan (H-1 dari tanggal kalender asli).</div>
+            {isAdmin && (
+              <button onClick={saveAdBudgets} disabled={saving} className={`mt-3 ${btnClass} flex items-center gap-1.5`} style={{ ...btnPrimaryStyle(PALETTE.ochre, PALETTE.ochreDeep), opacity: saving ? 0.7 : 1 }}>
+                {saving && <Loader2 size={14} className="animate-spin" />}{saving ? "Menyimpan…" : `Simpan Budget/Hari ${monthLabel(selectedMonth)}`}
+              </button>
+            )}
+            <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>Kolom "ROAS Hari Ini" & "vs Kemarin" memakai definisi "Hari Ini" yang sama seperti di tab Ringkasan (H-1 dari tanggal kalender asli). Budget/Hari disimpan per bulan — ganti bulan di selector atas untuk atur budget bulan lain.</div>
           </Card>
         </div>
       )}
