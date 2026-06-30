@@ -663,12 +663,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("overview");
   const [selectedMonth, setSelectedMonth] = useState(todayYM());
-  const [periodMode, setPeriodMode] = useState("month"); // "month" | "day"
+  const [periodMode, setPeriodMode] = useState("month"); // "month" | "day" | "custom"
   const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [customStartDate, setCustomStartDate] = useState(todayStr());
+  const [customEndDate, setCustomEndDate] = useState(todayStr());
 
   // viewDates: daftar tanggal yang dipakai oleh SEMUA useMemo (overview, sourceBreakdown, dll).
-  // Mode "month" = semua hari di selectedMonth (seperti sebelumnya).
-  // Mode "day"   = cuma satu tanggal (selectedDate), dan selectedMonth ikut disesuaikan.
+  // Mode "month"  = semua hari di selectedMonth.
+  // Mode "day"    = cuma satu tanggal (selectedDate).
+  // Mode "custom" = semua tanggal dari customStartDate s/d customEndDate (inklusif, urutan dibalik kalau end < start).
 
   const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
   const [benchmarks, setBenchmarks] = useState({ targetROAS: 0, targetCR: 0 });
@@ -790,15 +793,31 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   // viewDates = tanggal-tanggal yang dipakai oleh overview/sourceBreakdown/adPerformance.
   // Ini satu-satunya hal yang berubah antara mode bulan vs hari — useMemo lain tidak perlu diubah.
-  const viewDates = useMemo(
-    () => periodMode === "day" ? [selectedDate] : monthDates,
-    [periodMode, selectedDate, monthDates]
-  );
+  const viewDates = useMemo(() => {
+    if (periodMode === "day") return [selectedDate];
+    if (periodMode === "custom") {
+      let start = customStartDate, end = customEndDate;
+      if (start > end) { const t = start; start = end; end = t; } // tukar kalau kebalik
+      const dates = [];
+      let cur = new Date(start);
+      const endD = new Date(end);
+      while (cur <= endD) { dates.push(ymd(cur)); cur = addDays(cur, 1); }
+      return dates;
+    }
+    return monthDates;
+  }, [periodMode, selectedDate, customStartDate, customEndDate, monthDates]);
 
   // selectedMonth ikut berubah kalau mode hari (supaya bulan yang ditampilkan tetap sesuai)
   const effectiveMonth = periodMode === "day" ? selectedDate.slice(0, 7) : selectedMonth;
   const periodLabel = periodMode === "day"
     ? new Date(selectedDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : periodMode === "custom"
+    ? (() => {
+        const fmt = (d) => new Date(d).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+        const start = customStartDate <= customEndDate ? customStartDate : customEndDate;
+        const end = customStartDate <= customEndDate ? customEndDate : customStartDate;
+        return start === end ? fmt(start) : `${fmt(start)} \u2013 ${fmt(end)}`;
+      })()
     : monthLabel(selectedMonth);
 
   const overview = useMemo(() => {
@@ -880,14 +899,17 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
-    // Perbandingan dengan periode sebelumnya: mode bulan = bulan lalu, mode hari = hari sebelumnya
+    // Perbandingan dengan periode sebelumnya: mode bulan = bulan lalu; mode hari/custom = N hari
+    // tepat sebelum periode ini, N = panjang periode (hari mode = 1 hari, custom = sepanjang range).
     const [selY, selM] = selectedMonth.split("-").map(Number);
     const lastMonthYM = ym(new Date(selY, selM - 2, 1));
     let lastMonthDates, lastMonthMtd, lastMonthTarget, lastMonthPct;
-    if (periodMode === "day") {
-      const prevDate = ymd(addDays(new Date(viewDates[0]), -1));
-      lastMonthDates = [prevDate];
-      lastMonthMtd = accounts.reduce((s, a) => s + (entries[prevDate]?.[a.id]?.gmv || 0), 0);
+    if (periodMode === "day" || periodMode === "custom") {
+      const n = viewDates.length || 1;
+      const startDate = new Date(viewDates[0]);
+      const prevDates = Array.from({ length: n }, (_, i) => ymd(addDays(startDate, -(n - i))));
+      lastMonthDates = prevDates;
+      lastMonthMtd = accounts.reduce((s, a) => s + sumField(entries, prevDates, a.id, "gmv"), 0);
       lastMonthTarget = 0;
       lastMonthPct = null;
     } else {
@@ -1729,12 +1751,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           {/* toggle mode periode — cuma relevan untuk tab Ringkasan dan Sumber GMV */}
           {(tab === "overview" || tab === "sumber" || tab === "iklan") && (
             <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
-              {[["month", "Bulanan"], ["day", "Harian"]].map(([mode, label]) => (
+              {[["month", "Bulanan"], ["day", "Harian"], ["custom", "Custom"]].map(([mode, label]) => (
                 <button key={mode} onClick={() => {
                   setPeriodMode(mode);
                   if (mode === "day") {
                     setSelectedDate(todayStr());
                     setSelectedMonth(todayStr().slice(0, 7));
+                  } else if (mode === "custom") {
+                    setCustomStartDate(todayStr());
+                    setCustomEndDate(todayStr());
                   }
                 }}
                   className="text-xs px-3 py-1.5 font-semibold transition-all"
@@ -1745,18 +1770,44 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </div>
           )}
 
-          {/* selector periode: month picker atau date picker sesuai mode */}
-          {periodMode === "month" || !(tab === "overview" || tab === "sumber" || tab === "iklan") ? (
+          {/* selector periode: month picker / date picker / custom range sesuai mode */}
+          {!(tab === "overview" || tab === "sumber" || tab === "iklan") || periodMode === "month" ? (
             <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}
               className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }}>
               {monthOptions.map((m) => (
                 <option key={m} value={m}>{monthLabel(m)}{m === todayYM() ? " (Bulan Ini)" : ""}</option>
               ))}
             </select>
-          ) : (
+          ) : periodMode === "day" ? (
             <input type="date" value={selectedDate}
               onChange={(e) => { setSelectedDate(e.target.value); setSelectedMonth(e.target.value.slice(0, 7)); }}
               className="text-sm px-3 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              {/* quick preset, mirip pola umum dashboard marketplace */}
+              <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
+                {[
+                  ["Hari Ini", 0, 0], ["Kemarin", 1, 1], ["7 Hari", 6, 0], ["30 Hari", 29, 0],
+                ].map(([label, backStart, backEnd]) => (
+                  <button key={label} onClick={() => {
+                    const end = ymd(addDays(effectiveToday(), -backEnd));
+                    const start = ymd(addDays(effectiveToday(), -backStart));
+                    setCustomStartDate(start); setCustomEndDate(end);
+                  }}
+                    className="text-[11px] px-2.5 py-1.5 font-medium transition-all"
+                    style={{ background: PALETTE.panel, color: PALETTE.inkSoft }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
+                <span className="text-xs" style={{ color: PALETTE.inkSoft }}>s/d</span>
+                <input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded-lg border outline-none" style={{ borderColor: PALETTE.line, background: PALETTE.panel, boxShadow: cardShadow }} />
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -1787,27 +1838,27 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           )}
 
           {/* hero stats */}
-          {periodMode === "day" ? (
+          {periodMode === "day" || periodMode === "custom" ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Card accent={PALETTE.brand} className="flex flex-col justify-between">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Hari Ini</div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>{periodMode === "day" ? "GMV Hari Ini" : "GMV Periode Ini"}</div>
                 <div className="text-2xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(overview.totalMtd)}</div>
-                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{new Date(selectedDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" })}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{periodMode === "day" ? new Date(selectedDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" }) : periodLabel}</div>
               </Card>
               <Card accent={PALETTE.ochre} className="flex flex-col justify-between">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Kemarin</div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>{periodMode === "day" ? "GMV Kemarin" : "GMV Periode Sebelumnya"}</div>
                 <div className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(overview.lastMonthMtd)}</div>
-                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{new Date(ymd(addDays(new Date(selectedDate), -1))).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" })}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{periodMode === "day" ? new Date(ymd(addDays(new Date(selectedDate), -1))).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "short" }) : `${viewDates.length} hari sebelum ${periodLabel}`}</div>
               </Card>
               <Card accent={overview.mtdVsLastMonth !== null && overview.mtdVsLastMonth >= 0 ? PALETTE.teal : PALETTE.coral} className="flex flex-col justify-between">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Hari Ini vs Kemarin</div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>{periodMode === "day" ? "Hari Ini vs Kemarin" : "Periode Ini vs Sebelumnya"}</div>
                 <DeltaBadge value={overview.mtdVsLastMonth} size="text-2xl" />
-                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.mtdVsLastMonth === null ? "Belum ada data kemarin" : overview.mtdVsLastMonth >= 0 ? "Lebih baik" : "Di bawah kemarin"}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.mtdVsLastMonth === null ? "Belum ada data pembanding" : overview.mtdVsLastMonth >= 0 ? "Lebih baik" : "Di bawah periode sebelumnya"}</div>
               </Card>
               <Card accent={PALETTE.plum} className="flex flex-col justify-between">
                 <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Orderan</div>
                 <div className="text-2xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{overview.hasOrdersData ? fmtNum(overview.totalOrders) : "—"}</div>
-                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.hasOrdersData && overview.lastMonthOrders > 0 ? `kemarin: ${fmtNum(overview.lastMonthOrders)}` : "order hari ini"}</div>
+                <div className="text-xs mt-1" style={{ color: PALETTE.inkSoft }}>{overview.hasOrdersData && overview.lastMonthOrders > 0 ? `sebelumnya: ${fmtNum(overview.lastMonthOrders)}` : "order pada periode ini"}</div>
               </Card>
             </div>
           ) : (
@@ -1862,39 +1913,37 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           </div>
           )} {/* end mode bulanan grid */}
 
-          {/* card perbandingan periode sebelumnya — tampil di kedua mode */}
+          {/* card perbandingan periode sebelumnya — khusus mode bulanan (mode hari/custom sudah
+              tercakup di hero stats 4-kartu di atas, jadi tidak perlu duplikat info) */}
+          {periodMode === "month" && (
           <Card accent={PALETTE.plum} className="sm:col-span-2 lg:col-span-3 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
               <div className="flex-1">
                 <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
-                  {periodMode === "day" ? "GMV Hari Sebelumnya" : "GMV Bulan Lalu"}{" "}
+                  GMV Bulan Lalu{" "}
                   <span className="normal-case font-normal">({monthLabel(overview.lastMonthYM)})</span>
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(overview.lastMonthMtd)}</span>
-                  {periodMode === "month" && <span className="text-xs" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.lastMonthTarget)}</span>}
+                  <span className="text-xs" style={{ color: PALETTE.inkSoft }}>dari target {fmtCompactRp(overview.lastMonthTarget)}</span>
                 </div>
-                {overview.lastMonthPct !== null && periodMode === "month" && (
+                {overview.lastMonthPct !== null && (
                   <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>Pencapaian: <b style={{ color: PALETTE.ink }}>{Math.round(overview.lastMonthPct)}%</b> dari target</div>
                 )}
               </div>
               <div className="h-px sm:h-12 sm:w-px w-full" style={{ background: PALETTE.line }} />
               <div className="flex-1">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
-                  {periodMode === "day" ? "GMV Hari Ini vs Hari Sebelumnya" : "GMV Bulan Ini vs Bulan Lalu"}
-                </div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Bulan Ini vs Bulan Lalu</div>
                 <div className="flex items-baseline gap-2">
                   <DeltaBadge value={overview.mtdVsLastMonth} size="text-xl" />
                   <span className="text-xs" style={{ color: PALETTE.inkSoft }}>{fmtCompactRp(overview.totalMtd)} vs {fmtCompactRp(overview.lastMonthMtd)}</span>
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: PALETTE.inkSoft }}>
-                  {overview.mtdVsLastMonth === null ? `Belum ada data ${periodMode === "day" ? "hari sebelumnya" : "bulan lalu"}` : overview.mtdVsLastMonth >= 0 ? "Lebih baik dari periode sebelumnya" : "Di bawah periode sebelumnya"}
+                  {overview.mtdVsLastMonth === null ? "Belum ada data bulan lalu" : overview.mtdVsLastMonth >= 0 ? "Lebih baik dari periode sebelumnya" : "Di bawah periode sebelumnya"}
                 </div>
               </div>
               <div className="h-px sm:h-12 sm:w-px w-full" style={{ background: PALETTE.line }} />
               <div className="flex-1">
-                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>
-                  Total Orderan {periodMode === "day" ? "Hari Ini" : "Bulan Ini"}
-                </div>
+                <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Orderan Bulan Ini</div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-xl font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                     {overview.hasOrdersData ? fmtNum(overview.totalOrders) : "—"}
@@ -1903,7 +1952,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 </div>
                 {overview.hasOrdersData && (
                   <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-xs" style={{ color: PALETTE.inkSoft }}>vs {periodMode === "day" ? "kemarin" : "bulan lalu"} ({fmtNum(overview.lastMonthOrders)}):</span>
+                    <span className="text-xs" style={{ color: PALETTE.inkSoft }}>vs bulan lalu ({fmtNum(overview.lastMonthOrders)}):</span>
                     <DeltaBadge value={overview.ordersVsLast} size="text-xs" />
                   </div>
                 )}
@@ -1912,29 +1961,31 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 )}
               </div>
             </Card>
+          )}
 
           {/* leaderboard ranking pencapaian toko */}
           <Card>
-            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target ${periodMode === "day" ? "Harian" : ""}`} title="Ranking Pencapaian Toko" />
+            <SectionTitle eyebrow={`${periodLabel} \u2022 Urut % Target ${periodMode !== "month" ? "Proporsional" : ""}`} title="Ranking Pencapaian Toko" />
             <div className="space-y-2.5">
-              {(periodMode === "day" ? [...overview.perAccount].sort((a, b) => {
-                // mode harian: ranking berdasarkan GMV hari ini vs target/hari (target bulanan ÷ jumlah hari sebulan)
+              {(periodMode !== "month" ? [...overview.perAccount].sort((a, b) => {
+                // mode hari/custom: ranking berdasarkan GMV periode ini vs target proporsional
+                // (target bulanan ÷ jumlah hari sebulan × jumlah hari di periode yang dipilih)
                 const dim = monthMeta.dim || 30;
-                const aGmv = entries[selectedDate]?.[a.id]?.gmv || 0;
-                const bGmv = entries[selectedDate]?.[b.id]?.gmv || 0;
-                const aDailyTarget = a.target > 0 ? a.target / dim : 0;
-                const bDailyTarget = b.target > 0 ? b.target / dim : 0;
-                const aPct = aDailyTarget > 0 ? aGmv / aDailyTarget : 0;
-                const bPct = bDailyTarget > 0 ? bGmv / bDailyTarget : 0;
-                if ((aDailyTarget > 0) !== (bDailyTarget > 0)) return aDailyTarget > 0 ? -1 : 1;
+                const aGmv = sumField(entries, viewDates, a.id, "gmv");
+                const bGmv = sumField(entries, viewDates, b.id, "gmv");
+                const aPeriodTarget = a.target > 0 ? (a.target / dim) * viewDates.length : 0;
+                const bPeriodTarget = b.target > 0 ? (b.target / dim) * viewDates.length : 0;
+                const aPct = aPeriodTarget > 0 ? aGmv / aPeriodTarget : 0;
+                const bPct = bPeriodTarget > 0 ? bGmv / bPeriodTarget : 0;
+                if ((aPeriodTarget > 0) !== (bPeriodTarget > 0)) return aPeriodTarget > 0 ? -1 : 1;
                 if (bPct !== aPct) return bPct - aPct;
                 return bGmv - aGmv;
               }) : ranking).map((acc, idx) => {
                 const [bandFrom, bandTo] = rankBandColors(idx);
                 const dim = monthMeta.dim || 30;
-                const dailyGmv = periodMode === "day" ? (entries[selectedDate]?.[acc.id]?.gmv || 0) : null;
-                const dailyTarget = acc.target > 0 ? acc.target / dim : 0;
-                const dailyPct = dailyTarget > 0 && dailyGmv !== null ? (dailyGmv / dailyTarget) * 100 : null;
+                const periodGmv = periodMode !== "month" ? sumField(entries, viewDates, acc.id, "gmv") : null;
+                const periodTarget = acc.target > 0 ? (acc.target / dim) * viewDates.length : 0;
+                const periodPct = periodTarget > 0 && periodGmv !== null ? (periodGmv / periodTarget) * 100 : null;
                 const hasTarget = acc.target > 0;
                 return (
                   <div key={acc.id} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
@@ -1949,11 +2000,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                         <span className="text-white font-black text-2xl sm:text-3xl leading-none" style={{ fontFamily: "'Sora', sans-serif", textShadow: "0 2px 6px rgba(0,0,0,0.15)" }}>{idx + 1}</span>
                       </div>
                       <div className="text-right">
-                        {periodMode === "day" ? (
+                        {periodMode !== "month" ? (
                           <>
-                            <div className="text-white font-extrabold text-lg sm:text-xl leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{dailyPct !== null ? `${Math.round(dailyPct)}%` : fmtCompactRp(dailyGmv)}</div>
+                            <div className="text-white font-extrabold text-lg sm:text-xl leading-none" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{periodPct !== null ? `${Math.round(periodPct)}%` : fmtCompactRp(periodGmv)}</div>
                             <div className="text-white/80 text-[10px] sm:text-[11px] mt-0.5">
-                              {fmtCompactRp(dailyGmv)} / {dailyTarget > 0 ? fmtCompactRp(dailyTarget) : "—"} per hari
+                              {fmtCompactRp(periodGmv)} / {periodTarget > 0 ? fmtCompactRp(periodTarget) : "—"}
                             </div>
                           </>
                         ) : hasTarget ? (
@@ -1974,7 +2025,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               })}
             </div>
             <div className="text-[11px] mt-3" style={{ color: PALETTE.inkFaint }}>
-              {periodMode === "day" ? `Ranking berdasarkan % GMV hari ini vs target harian (target bulanan ÷ ${monthMeta.dim} hari). Toko tanpa target diurutkan berdasarkan GMV mentah.` : "Diurutkan dari % pencapaian target MTD tertinggi. Toko tanpa target disusun di bawah berdasarkan GMV mentah."}
+              {periodMode !== "month" ? `Ranking berdasarkan % GMV periode ini vs target proporsional (target bulanan ÷ ${monthMeta.dim} hari × ${viewDates.length} hari di periode ini). Toko tanpa target diurutkan berdasarkan GMV mentah.` : "Diurutkan dari % pencapaian target MTD tertinggi. Toko tanpa target disusun di bawah berdasarkan GMV mentah."}
             </div>
           </Card>
 
