@@ -1264,17 +1264,22 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       ? sessions.reduce((s, x) => s + (x.gpm || 0), 0) / sessions.filter((x) => x.gpm !== null && x.gpm !== undefined).length
       : null;
 
-    // ranking host berdasarkan total Direct GMV bulan berjalan
+    // ranking host berdasarkan total Direct GMV — dikelompokkan PER NAMA HOST (bukan per toko),
+    // jadi satu orang yang live di beberapa toko tetap muncul sebagai satu baris di ranking.
     const byHost = {};
     sessions.forEach((x) => {
-      const key = `${x.accountId}__${x.hostName}`;
-      if (!byHost[key]) byHost[key] = { hostName: x.hostName, accountName: x.accountName, accountId: x.accountId, sessions: 0, gmv: 0, orders: 0, hours: 0 };
+      const key = x.hostName; // key = nama orang, bukan akun+nama
+      if (!byHost[key]) byHost[key] = { hostName: x.hostName, accountNames: new Set(), sessions: 0, gmv: 0, orders: 0, hours: 0 };
+      byHost[key].accountNames.add(x.accountName);
       byHost[key].sessions += 1;
       byHost[key].gmv += x.directGmv || 0;
       byHost[key].orders += x.orders || 0;
       byHost[key].hours += calcLiveHours(x.startTime, x.endTime) || 0;
     });
-    const hostRanking = Object.values(byHost).sort((a, b) => b.gmv - a.gmv);
+    // Konversi Set ke string untuk ditampilkan (misal "Pretty, Lovie")
+    const hostRanking = Object.values(byHost)
+      .map((h) => ({ ...h, accountName: Array.from(h.accountNames).join(", ") }))
+      .sort((a, b) => b.gmv - a.gmv);
 
     return { totalSessions, totalOrders, totalGmv, totalViewers, totalHours, avgCo, avgCtr, avgGpm, hostRanking };
   }, [liveSessionsForMonth]);
@@ -3121,12 +3126,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 {liveStats.hostRanking.map((h, idx) => {
                   const [bandFrom, bandTo] = rankBandColors(idx);
                   return (
-                    <div key={`${h.accountId}-${h.hostName}`} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
+                    <div key={h.hostName} className="flex items-stretch rounded-xl overflow-hidden" style={{ boxShadow: cardShadow }}>
                       <div className="flex items-center gap-2 px-3 py-2.5 shrink-0 w-36 sm:w-48" style={{ background: PALETTE.panel, borderTop: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, borderLeft: `1px solid ${PALETTE.line}` }}>
                         <Radio size={14} style={{ color: LIVE_ACCENT }} className="shrink-0" />
                         <div className="min-w-0">
                           <div className="text-xs sm:text-sm font-bold truncate">{h.hostName}</div>
-                          <div className="text-[10px] truncate" style={{ color: PALETTE.inkSoft }}>{h.accountName}</div>
+                          <div className="text-[10px] truncate" style={{ color: PALETTE.inkSoft }} title={h.accountName}>{h.accountName}</div>
                         </div>
                       </div>
                       <div className="flex-1 flex items-center justify-between gap-3 px-4 py-2.5" style={{ background: `linear-gradient(110deg, ${bandFrom}, ${bandTo})` }}>
