@@ -1193,6 +1193,17 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     const overallRoi = totalSpend > 0 ? ((totalRevenue - totalSpend) / totalSpend) * 100 : null;
     const totalDaysWithAdData = perAccount.reduce((s, a) => s + a.daysWithAdData, 0);
 
+    // GMV total semua sumber (bukan hanya dari iklan) — untuk perbandingan seberapa besar
+    // kontribusi revenue iklan terhadap total GMV toko secara keseluruhan.
+    const totalGmvAllStores = accounts.reduce((s, a) => s + sumField(entries, allDatesInMonth, a.id, "gmv"), 0);
+    const adRevenueShare = totalGmvAllStores > 0 ? (totalRevenue / totalGmvAllStores) * 100 : null;
+
+    // GMV per akun untuk kolom tabel
+    const perAccountWithGmv = perAccount.map((a) => ({
+      ...a,
+      gmvTotal: sumField(entries, allDatesInMonth, a.id, "gmv"),
+    }));
+
     const chartData = allDatesInMonth.map((date) => {
       const d = new Date(date);
       const row = { date, day: d.getDate() };
@@ -1203,7 +1214,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       return row;
     });
 
-    return { perAccount, totalSpend, totalRevenue, totalOrders, totalBudgetPerHari, overallRoas, overallCpa, overallRoi, totalDaysWithAdData, chartData, dim };
+    return { perAccount: perAccountWithGmv, totalSpend, totalRevenue, totalOrders, totalBudgetPerHari, overallRoas, overallCpa, overallRoi, totalDaysWithAdData, chartData, dim, totalGmvAllStores, adRevenueShare };
   }, [accounts, entries, adBudgets, viewDates, periodMode, selectedMonth]);
 
   // ---- Live Tracker: filter & agregasi (terpisah total dari useMemo Input Data GMV) ----
@@ -2755,8 +2766,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalSpend)}</div>
             </Card>
             <Card accent={PALETTE.teal}>
-              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Total Ad Revenue</div>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>Ad Revenue</div>
               <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(adPerformance.totalRevenue)}</div>
+            </Card>
+            <Card accent={PALETTE.brand}>
+              <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>GMV Total (Iklan+Non Iklan)</div>
+              <div className="text-lg font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(adPerformance.totalGmvAllStores)}</div>
+              <div className="text-[11px] mt-1" style={{ color: PALETTE.inkSoft }}>
+                {adPerformance.adRevenueShare !== null ? `Iklan: ${adPerformance.adRevenueShare.toFixed(1)}% dari GMV` : "Belum ada data iklan"}
+              </div>
             </Card>
             <Card accent={PALETTE.brand}>
               <div className="text-[10px] uppercase tracking-wide mb-1" style={{ color: PALETTE.inkSoft }}>ROAS Gabungan</div>
@@ -2820,6 +2838,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                     <th className="font-medium py-1.5 pr-3">Akun</th>
                     <th className="font-medium py-1.5 pr-3">Ad Spend</th>
                     <th className="font-medium py-1.5 pr-3">Ad Revenue</th>
+                    <th className="font-medium py-1.5 pr-3">GMV Total Toko</th>
                     <th className="font-medium py-1.5 pr-3">ROAS</th>
                     <th className="font-medium py-1.5 pr-3">ROI</th>
                     <th className="font-medium py-1.5 pr-3">Biaya/Pesanan</th>
@@ -2834,6 +2853,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                       <td className="py-2 pr-3"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full" style={{ background: a.color }} />{a.name}<PlatformTag platform={a.platform} /></div></td>
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(a.spend)}</td>
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{fmtCompactRp(a.revenue)}</td>
+                      <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace", ...gradientText(PALETTE.brand, PALETTE.brand2) }}>{fmtCompactRp(a.gmvTotal)}</td>
                       <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace", color: a.roas === null ? PALETTE.inkFaint : a.roas < 1 ? PALETTE.coral : PALETTE.teal }}>{a.roas !== null ? a.roas.toFixed(2) : "—"}</td>
                       <td className="py-2 pr-3 font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace", color: a.roi === null ? PALETTE.inkFaint : a.roi >= 0 ? PALETTE.teal : PALETTE.coral }}>{a.roi !== null ? `${a.roi.toFixed(1)}%` : "—"}</td>
                       <td className="py-2 pr-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{a.cpa !== null ? fmtCompactRp(a.cpa) : "—"}</td>
