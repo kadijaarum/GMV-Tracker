@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ReferenceLine, PieChart, Pie, Cell, BarChart, Bar,
@@ -210,6 +210,21 @@ const DEFAULT_LIVE_ONLY_ACCOUNTS = [
   { id: "pompurin", name: "Pompurin", platform: "shopee", color: "#0EA5E9" },
   { id: "star", name: "Star", platform: "shopee", color: "#D946EF" },
 ];
+
+// Konstanta fitur Jadwal Live
+const SCHEDULE_HOSTS_KEY = "gmv-dashboard-schedule-hosts-v1";
+const SCHEDULE_DATA_KEY  = "gmv-dashboard-schedule-data-v1"; // { [weekKey]: { slots, off } }
+const HOST_NAMES_KEY = "gmv-dashboard-host-names-v1"; // daftar nama host bersama Live Tracker + Jadwal
+const DEFAULT_HOST_NAMES = ["Ivonne","Fifi","Gita","Citra","Ana","Bella","Rena","Sherly","Winda"];
+const SCHEDULE_ROOMS = ["Ruang 1A", "Ruang 1B", "Ruang 2", "Ruang 3"];
+const SCHED_ACCENT = "#1D9E75"; // hijau — beda dari Live Tracker (rose) dan GMV brand (violet)
+const SCHED_SOFT   = "#E1F5EE";
+const SCHED_DEEP   = "#14532D";
+// Helper jadwal (perlu scope top-level karena dipakai di useMemo & handler)
+const getMonday = (d) => { const dt = new Date(d); const day = dt.getDay(); const diff = dt.getDate() - day + (day === 0 ? -6 : 1); return new Date(dt.setDate(diff)); };
+const weekKey  = (d) => { const m = getMonday(d); return `${m.getFullYear()}-W${String(Math.ceil(((m - new Date(m.getFullYear(),0,1))/86400000+1)/7)).padStart(2,'0')}`; };
+const SCHED_DAYS_SHORT = ["Min","Sen","Sel","Rab","Kam","Jum","Sab"];
+const SCHED_DAYS_FULL  = ["Minggu","Senin","Selasa","Rabu","Kamis","Jumat","Sabtu"];
 // Catatan kebijakan: riwayat revisi TIDAK PERNAH dipangkas/dihapus otomatis.
 // Data hanya terhapus lewat aksi manual eksplisit oleh Admin di tab Target & Akun.
 // (entries/targets/revisions disimpan per-akun lewat storageAdapter.js, bukan blob tunggal —
@@ -856,6 +871,21 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [liveFilterEnd, setLiveFilterEnd] = useState(todayStr());
   const [liveFilterAccount, setLiveFilterAccount] = useState("all");
   const [liveFilterHost, setLiveFilterHost] = useState("all");
+
+  // ---- Jadwal Live ----
+  const [schedHosts, setSchedHosts] = useState([]); // [{id,name,color,bg,sessions:[2,2]}]
+  const [hostNames, setHostNames] = useState(DEFAULT_HOST_NAMES); // daftar nama bersama Live Tracker & Jadwal
+  const [newHostNameInput, setNewHostNameInput] = useState("");
+  const [schedData, setSchedData] = useState({}); // { [weekKey]: { slots:{date:{room:{hostId,toko,starts[]}}}, off:{date:[hostId]} } }
+  const [schedWeekStart, setSchedWeekStart] = useState(() => getMonday(new Date()));
+  const [schedMode, setSchedMode] = useState("view"); // "view"|"edit"
+  const [schedEditCtx, setSchedEditCtx] = useState(null); // {date,room}
+  const [schedSesiStarts, setSchedSesiStarts] = useState([]);
+  const [schedNewName, setSchedNewName] = useState("");
+  const [schedNewSessions, setSchedNewSessions] = useState("2,2");
+  const [schedNewColor, setSchedNewColor] = useState("#1D9E75");
+  const [showSchedSidebar, setShowSchedSidebar] = useState(false);
+  const [schedRecapView, setSchedRecapView] = useState(false); // toggle rekap minggu
   const [liveSavedFlash, setLiveSavedFlash] = useState(false);
 
   const [hiddenAccounts, setHiddenAccounts] = useState(new Set());
@@ -878,11 +908,14 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     (async () => {
       const ok = typeof window !== "undefined" && !!window.storage;
       setStorageOk(ok);
-      const [cfg, expYears, savedAdBudgets, savedLiveOnlyAccounts] = await Promise.all([
+      const [cfg, expYears, savedAdBudgets, savedLiveOnlyAccounts, savedSchedHosts, savedSchedData, savedHostNames] = await Promise.all([
         safeGet(CFG_KEY, null),
         safeGet(EXPORTED_YEARS_KEY, {}),
         safeGet("gmv-dashboard-adbudgets-v1", {}),
         safeGet(LIVE_ONLY_ACCOUNTS_KEY, null),
+        safeGet(SCHEDULE_HOSTS_KEY, []),
+        safeGet(SCHEDULE_DATA_KEY, {}),
+        safeGet(HOST_NAMES_KEY, null),
       ]);
       const finalCfg = cfg || { accounts: DEFAULT_ACCOUNTS, benchmarks: { targetROAS: 0, targetCR: 0 } };
       setAccounts(finalCfg.accounts);
@@ -896,6 +929,12 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       const finalLiveOnly = savedLiveOnlyAccounts || DEFAULT_LIVE_ONLY_ACCOUNTS;
       setLiveOnlyAccounts(finalLiveOnly);
       if (!savedLiveOnlyAccounts && ok) await safeSet(LIVE_ONLY_ACCOUNTS_KEY, finalLiveOnly);
+
+      setSchedHosts(savedSchedHosts || []);
+      setSchedData(savedSchedData || {});
+      const finalHostNames = savedHostNames || DEFAULT_HOST_NAMES;
+      setHostNames(finalHostNames);
+      if (!savedHostNames && ok) await safeSet(HOST_NAMES_KEY, finalHostNames);
 
       const accountIds = finalCfg.accounts.map((a) => a.id);
       const liveAccountIds = [...accountIds, ...finalLiveOnly.map((a) => a.id)];
@@ -1676,6 +1715,126 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     }
   };
 
+  /* ---------- handlers: Jadwal Live ---------- */
+  const schedWeekKey = weekKey(schedWeekStart);
+  const schedWeekDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(schedWeekStart); d.setDate(d.getDate() + i); return d; });
+
+  const getSchedDay = useCallback((date) => {
+    const dk = ymd(date);
+    const wk = weekKey(date);
+    return schedData[wk]?.slots?.[dk] || {};
+  }, [schedData]);
+
+  const getSchedOff = useCallback((date) => {
+    const dk = ymd(date);
+    const wk = weekKey(date);
+    return schedData[wk]?.off?.[dk] || [];
+  }, [schedData]);
+
+  const saveSchedSlot = async (date, room, slotData) => {
+    const dk = ymd(date);
+    const wk = weekKey(date);
+    const next = JSON.parse(JSON.stringify(schedData));
+    if (!next[wk]) next[wk] = { slots: {}, off: {} };
+    if (!next[wk].slots[dk]) next[wk].slots[dk] = {};
+    if (slotData) next[wk].slots[dk][room] = slotData;
+    else delete next[wk].slots[dk][room];
+    setSchedData(next);
+    try { await safeSet(SCHEDULE_DATA_KEY, next); } catch (e) { showToast("error", `Gagal simpan jadwal: ${e.message}`); }
+  };
+
+  const toggleSchedOff = async (date, hostId) => {
+    const dk = ymd(date);
+    const wk = weekKey(date);
+    const next = JSON.parse(JSON.stringify(schedData));
+    if (!next[wk]) next[wk] = { slots: {}, off: {} };
+    if (!next[wk].off[dk]) next[wk].off[dk] = [];
+    const arr = next[wk].off[dk];
+    const idx = arr.indexOf(hostId);
+    if (idx >= 0) arr.splice(idx, 1); else arr.push(hostId);
+    setSchedData(next);
+    try { await safeSet(SCHEDULE_DATA_KEY, next); } catch (e) { showToast("error", `Gagal simpan off: ${e.message}`); }
+  };
+
+  // Daftar nama host bersama — dipakai di Live Tracker (dropdown nama) dan Jadwal (pilih nama saat tambah host)
+  const addHostName = async () => {
+    if (!isAdmin) return;
+    const name = newHostNameInput.trim();
+    if (!name) { showToast("error", "Nama tidak boleh kosong."); return; }
+    if (hostNames.includes(name)) { showToast("error", `"${name}" sudah ada di daftar.`); return; }
+    const next = [...hostNames, name].sort((a, b) => a.localeCompare(b));
+    setHostNames(next);
+    setNewHostNameInput("");
+    try { await safeSet(HOST_NAMES_KEY, next); showToast("success", `"${name}" ditambahkan ke daftar host.`); }
+    catch (e) { showToast("error", `Gagal: ${e.message}`); }
+  };
+
+  const removeHostName = async (name) => {
+    if (!isAdmin) return;
+    if (!window.confirm(`Hapus "${name}" dari daftar host? Data live yang sudah dicatat dengan nama ini tidak ikut terhapus.`)) return;
+    const next = hostNames.filter((n) => n !== name);
+    setHostNames(next);
+    try { await safeSet(HOST_NAMES_KEY, next); showToast("success", `"${name}" dihapus dari daftar host.`); }
+    catch (e) { showToast("error", `Gagal: ${e.message}`); }
+  };
+
+  const addSchedHost = async () => {
+    if (!isAdmin) return;
+    const name = schedNewName;
+    if (!name) { showToast("error", "Pilih nama host dari daftar."); return; }
+    if (schedHosts.some((h) => h.name === name)) { showToast("error", `"${name}" sudah ada di jadwal minggu ini. Hapus dulu sebelum tambah ulang.`); return; }
+    const sessions = schedNewSessions.split(",").map((s) => parseInt(s.trim())).filter((n) => !isNaN(n) && n > 0);
+    if (!sessions.length) { showToast("error", "Format sesi tidak valid. Contoh: 2,2"); return; }
+    const id = `host_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`;
+    const bg = schedNewColor + "30";
+    const newHost = { id, name, color: schedNewColor, bg, sessions };
+    const next = [...schedHosts, newHost];
+    setSchedHosts(next);
+    setSchedNewName(""); setSchedNewSessions("2,2");
+    try { await safeSet(SCHEDULE_HOSTS_KEY, next); showToast("success", `Host "${name}" ditambahkan ke jadwal.`); }
+    catch (e) { showToast("error", `Gagal: ${e.message}`); }
+  };
+
+  const removeSchedHost = async (id) => {
+    if (!isAdmin) return;
+    const next = schedHosts.filter((h) => h.id !== id);
+    setSchedHosts(next);
+    try { await safeSet(SCHEDULE_HOSTS_KEY, next); showToast("success", "Host dihapus."); }
+    catch (e) { showToast("error", `Gagal: ${e.message}`); }
+  };
+
+  // Cek apakah sesi live aktual (dari liveSessions) cocok dengan jadwal yang direncanakan.
+  // "Sesuai" = nama host sama, tanggal sama, dan ada irisan waktu antara jadwal & aktual.
+  const checkSchedCompliance = useCallback((hostName, dateStr, scheduledStarts, sessionDurations) => {
+    if (!scheduledStarts?.length) return null;
+    const matches = liveSessions.filter((s) =>
+      s.date === dateStr &&
+      s.hostName?.toLowerCase().trim() === hostName?.toLowerCase().trim()
+    );
+    if (!matches.length) return { status: "absent", sessions: [] };
+    const results = scheduledStarts.map((start, si) => {
+      if (start == null) return { scheduled: null, actual: null, status: "unset" };
+      const dur = sessionDurations[si] || 2;
+      const schedEnd = start + dur;
+      const found = matches.find((m) => {
+        const aStart = m.startTime ? parseInt(m.startTime.split(":")[0]) : null;
+        const aEnd = m.endTime ? parseInt(m.endTime.split(":")[0]) : null;
+        if (aStart === null || aEnd === null) return false;
+        return aStart < schedEnd && aEnd > start; // overlap
+      });
+      return found
+        ? { scheduled: start, actual: parseInt(found.startTime), gmv: found.directGmv, status: "on_time" }
+        : { scheduled: start, actual: null, gmv: 0, status: "missed" };
+    });
+    const allOnTime = results.every((r) => r.status === "on_time" || r.status === "unset");
+    const anyOnTime = results.some((r) => r.status === "on_time");
+    return {
+      status: allOnTime ? "on_time" : anyOnTime ? "partial" : "missed",
+      sessions: results,
+      totalGmv: matches.reduce((s, m) => s + (m.directGmv || 0), 0),
+    };
+  }, [liveSessions]);
+
   const saveAccountsAndBenchmarks = async () => {
     if (!isAdmin) return;
     setSaving(true);
@@ -1995,15 +2154,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       {/* TABS */}
       <div className="flex gap-1.5 mb-5 p-1 rounded-xl flex-wrap" style={{ background: PALETTE.panelAlt, width: "fit-content" }}>
-        {[["overview", "Ringkasan"], ["input", "Input Data"], ["sumber", "Sumber GMV"], ["iklan", "Performa Iklan"], ["live", "Live Tracker"], ["settings", "Target & Akun"]].map(([key, label]) => (
+        {[["overview", "Ringkasan"], ["input", "Input Data"], ["sumber", "Sumber GMV"], ["iklan", "Performa Iklan"], ["live", "Live Tracker"], ["jadwal", "Jadwal Live"], ["settings", "Target & Akun"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all duration-200 flex items-center gap-1.5"
             style={tab === key
               ? (key === "live"
                   ? { background: `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})`, color: "#fff", boxShadow: glow(LIVE_ACCENT, 0.28) }
+                  : key === "jadwal"
+                  ? { background: `linear-gradient(135deg, ${SCHED_ACCENT}, ${SCHED_DEEP})`, color: "#fff", boxShadow: glow(SCHED_ACCENT, 0.28) }
                   : { background: `linear-gradient(135deg, ${PALETTE.brand}, ${PALETTE.brand2})`, color: "#fff", boxShadow: glow(PALETTE.brand, 0.28) })
               : { background: "transparent", color: PALETTE.inkSoft }}>
             {key === "live" && <Radio size={14} />}
+            {key === "jadwal" && <Calendar size={14} />}
             {label}
           </button>
         ))}
@@ -2941,8 +3103,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               </div>
               <div>
                 <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama HOST</label>
-                <input type="text" value={liveDraft.hostName} onChange={(e) => updateLiveDraftField("hostName", e.target.value)} placeholder="contoh: Dinda"
-                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }} />
+                <select value={liveDraft.hostName} onChange={(e) => updateLiveDraftField("hostName", e.target.value)}
+                  className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: LIVE_ACCENT_SOFT }}>
+                  <option value="">Pilih host…</option>
+                  {hostNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
               </div>
             </div>
 
@@ -3006,6 +3171,35 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
               {saving && <Loader2 size={14} className="animate-spin" />}{saving ? "Menyimpan…" : "Simpan Sesi Live"}<Radio size={14} />
             </button>
           </Card>
+
+          {/* panel kelola daftar host — admin only, dipakai bersama di Live Tracker dan Jadwal */}
+          {isAdmin && (
+            <Card>
+              <SectionTitle eyebrow="Berlaku juga di tab Jadwal Live" title="Kelola Daftar Host" />
+              <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>
+                Nama-nama di sini adalah daftar pilihan yang terkunci di dropdown "Nama HOST" form Live Tracker dan form input Jadwal. Pengguna non-admin tidak bisa mengetik nama bebas — harus pilih dari sini. Admin bisa tambah nama baru jika ada host baru.
+              </div>
+              <div className="flex items-end gap-2 flex-wrap mb-3 p-3 rounded-xl" style={{ background: PALETTE.panelAlt }}>
+                <div className="flex-1 min-w-[160px]">
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Nama Host Baru</label>
+                  <input type="text" value={newHostNameInput} onChange={(e) => setNewHostNameInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addHostName()} placeholder="contoh: Maya"
+                    className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: PALETTE.line }} />
+                </div>
+                <button onClick={addHostName} className={`${btnClass} flex items-center gap-1.5`} style={btnPrimaryStyle(PALETTE.brand, PALETTE.brandDeep)}>
+                  <PlusCircle size={14} />Tambah
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {hostNames.map((n) => (
+                  <div key={n} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium" style={{ background: PALETTE.panelAlt, border: `1px solid ${PALETTE.line}` }}>
+                    <span>{n}</span>
+                    <button onClick={() => removeHostName(n)} style={{ color: LIVE_ACCENT, background: "none", border: "none", cursor: "pointer", lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {isAdmin && (
             <Card>
@@ -3231,6 +3425,369 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           </Card>
         </div>
       )}
+
+      {/* ===================== JADWAL LIVE ===================== */}
+      {tab === "jadwal" && (() => {
+        const wk = schedWeekKey;
+        const wData = schedData[wk] || { slots: {}, off: {} };
+
+        const fmtWeekLabel = () => {
+          const s = schedWeekDays[0], e = schedWeekDays[6];
+          const M = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+          return `${s.getDate()} ${M[s.getMonth()]} – ${e.getDate()} ${M[e.getMonth()]} ${e.getFullYear()}`;
+        };
+
+        // Status compliance per hari per host
+        const recapData = schedWeekDays.map((d) => {
+          const dk = ymd(d);
+          const daySlots = wData.slots?.[dk] || {};
+          const dayOff = wData.off?.[dk] || [];
+          return {
+            date: d, dk,
+            hosts: schedHosts.map((h) => {
+              const isOff = dayOff.includes(h.id);
+              const slot = Object.values(daySlots).find((s) => s.hostId === h.id);
+              if (isOff) return { host: h, status: "off", slot: null, compliance: null };
+              if (!slot) return { host: h, status: "unscheduled", slot: null, compliance: null };
+              const compliance = checkSchedCompliance(h.name, dk, slot.starts, h.sessions);
+              return { host: h, status: compliance?.status || "scheduled", slot, compliance };
+            }),
+          };
+        });
+
+        const statusColor = { on_time: SCHED_ACCENT, partial: "#F59E0B", missed: LIVE_ACCENT, off: PALETTE.inkFaint, unscheduled: PALETTE.inkFaint, absent: LIVE_ACCENT, scheduled: PALETTE.inkSoft };
+        const statusLabel = { on_time: "✓ Sesuai", partial: "~ Sebagian", missed: "✗ Tidak live", off: "OFF", unscheduled: "—", absent: "✗ Tidak live", scheduled: "Terjadwal" };
+
+        return (
+          <div className="space-y-5">
+            {/* header navigasi minggu */}
+            <Card accent={SCHED_ACCENT}>
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <Calendar size={18} style={{ color: SCHED_ACCENT }} />
+                  <span className="text-sm font-bold" style={{ color: PALETTE.ink }}>Jadwal Live Mingguan</span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
+                    {[["view","👁 View"],["edit","✏️ Edit"]].map(([m,l]) => (
+                      <button key={m} onClick={() => setSchedMode(m)} className="text-xs px-3 py-1.5 font-semibold transition-all"
+                        style={{ background: schedMode === m ? `linear-gradient(135deg,${SCHED_ACCENT},${SCHED_DEEP})` : PALETTE.panel, color: schedMode === m ? "#fff" : PALETTE.inkSoft }}>{l}</button>
+                    ))}
+                  </div>
+                  <button onClick={() => setSchedRecapView((v) => !v)} className="text-xs px-3 py-1.5 rounded-lg font-semibold border"
+                    style={{ borderColor: schedRecapView ? SCHED_ACCENT : PALETTE.line, background: schedRecapView ? SCHED_SOFT : PALETTE.panel, color: schedRecapView ? SCHED_DEEP : PALETTE.inkSoft }}>
+                    📊 Rekap Mingguan
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <button onClick={() => setSchedWeekStart((w) => { const d = new Date(w); d.setDate(d.getDate()-7); return d; })} className="px-2 py-1 rounded text-sm" style={{ background: PALETTE.panelAlt }}>‹</button>
+                <span className="text-sm font-semibold flex-1 text-center" style={{ color: PALETTE.ink }}>{fmtWeekLabel()}</span>
+                <button onClick={() => setSchedWeekStart((w) => { const d = new Date(w); d.setDate(d.getDate()+7); return d; })} className="px-2 py-1 rounded text-sm" style={{ background: PALETTE.panelAlt }}>›</button>
+              </div>
+            </Card>
+
+            {/* grid jadwal */}
+            {!schedRecapView && (
+              <Card>
+                <div className="overflow-x-auto" style={{ maxHeight: "70vh", overflowY: "auto" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(52px,1fr))`, minWidth: 800 }}>
+                    {/* corner */}
+                    <div style={{ gridRow: "1/3", padding: "4px 2px", fontSize: 10, color: PALETTE.inkSoft, textAlign: "center", borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, display: "flex", alignItems: "center", justifyContent: "center", background: PALETTE.panelAlt }}>Jam</div>
+                    {/* day headers */}
+                    {schedWeekDays.map((d, di) => {
+                      const dk = ymd(d);
+                      const isToday = dk === todayStr();
+                      const dayOff = wData.off?.[dk] || [];
+                      return (
+                        <div key={di} style={{ gridColumn: `${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding: "4px 2px", fontSize: 10, fontWeight: 700, textAlign: "center", color: isToday ? SCHED_ACCENT : PALETTE.ink, background: isToday ? SCHED_SOFT : PALETTE.panelAlt, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}` }}>
+                          <div>{SCHED_DAYS_SHORT[d.getDay()]} {d.getDate()}/{d.getMonth()+1}</div>
+                          {dayOff.length > 0 && <div style={{ fontSize: 8, color: LIVE_ACCENT }}>OFF: {dayOff.map(id => schedHosts.find(h=>h.id===id)?.name||id).join(", ")}</div>}
+                          {schedMode === "edit" && (
+                            <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 2 }}>
+                              {schedHosts.map((h) => (
+                                <button key={h.id} onClick={() => toggleSchedOff(d, h.id)}
+                                  style={{ fontSize: 7, padding: "1px 4px", borderRadius: 3, border: `1px solid ${dayOff.includes(h.id) ? LIVE_ACCENT : "#ddd"}`, background: dayOff.includes(h.id) ? "#FFE4E9" : "#fff", color: dayOff.includes(h.id) ? LIVE_ACCENT : PALETTE.inkSoft, cursor: "pointer" }}>
+                                  {h.name}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {/* room sub-headers */}
+                    {schedWeekDays.map((d, di) =>
+                      SCHEDULE_ROOMS.map((room, ri) => (
+                        <div key={`rh-${di}-${ri}`} style={{ fontSize: 8, padding: "2px 1px", textAlign: "center", color: PALETTE.inkSoft, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, background: PALETTE.panelAlt }}>
+                          {room.replace("Ruang ", "R")}
+                        </div>
+                      ))
+                    )}
+                    {/* hour rows */}
+                    {Array.from({ length: 24 }, (_, hr) => (
+                      <React.Fragment key={hr}>
+                        <div style={{ fontSize: 9, textAlign: "center", color: PALETTE.inkSoft, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, padding: "1px 2px", display: "flex", alignItems: "center", justifyContent: "center", background: PALETTE.panelAlt }}>
+                          {String(hr).padStart(2,"0")}:00
+                        </div>
+                        {schedWeekDays.map((d, di) => {
+                          const dk = ymd(d);
+                          const daySlots = wData.slots?.[dk] || {};
+                          const dayOff = wData.off?.[dk] || [];
+                          return SCHEDULE_ROOMS.map((room, ri) => {
+                            const entry = daySlots[room];
+                            const h = entry?.hostId ? schedHosts.find((x) => x.id === entry.hostId) : null;
+                            const isOff = h && dayOff.includes(h.id);
+                            let active = false, isStart = false;
+                            if (h && !isOff && entry.starts) {
+                              h.sessions.forEach((dur, si) => {
+                                const st = entry.starts[si];
+                                if (st != null && hr >= st && hr < st + dur) active = true;
+                                if (st === hr) isStart = true;
+                              });
+                            }
+                            const cellStyle = {
+                              borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`,
+                              minHeight: 20, display: "flex", alignItems: "center", justifyContent: "center",
+                              background: active ? h.bg : PALETTE.bg || "#fff",
+                              cursor: schedMode === "edit" ? "pointer" : "default",
+                            };
+                            return (
+                              <div key={`cell-${di}-${ri}-${hr}`} style={cellStyle}
+                                onClick={() => {
+                                  if (schedMode !== "edit") return;
+                                  setSchedEditCtx({ date: d, room });
+                                  setSchedSesiStarts(entry?.starts ? [...entry.starts] : []);
+                                  setShowSchedSidebar(true);
+                                }}>
+                                {active && (
+                                  <div style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", padding: "0 2px", width: "100%", textAlign: "center", fontSize: 8, lineHeight: 1.3, fontWeight: 600, color: h.color }}>
+                                    {isStart ? `${h.name}▸` : h.name}
+                                    {isStart && entry.toko ? <div style={{ fontSize: 7, opacity: 0.7 }}>{entry.toko}</div> : null}
+                                  </div>
+                                )}
+                                {!active && schedMode === "edit" && (
+                                  <span style={{ fontSize: 7, opacity: 0.15, color: PALETTE.inkSoft }}>+</span>
+                                )}
+                              </div>
+                            );
+                          });
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+                {/* sidebar edit slot */}
+                {showSchedSidebar && schedEditCtx && (() => {
+                  const { date, room } = schedEditCtx;
+                  const dk = ymd(date);
+                  const dayOff = wData.off?.[dk] || [];
+                  const entry = wData.slots?.[dk]?.[room];
+                  const selHost = schedHosts.find((h) => h.id === (schedEditCtx.hostId || entry?.hostId));
+                  return (
+                    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(28,21,35,0.45)" }}>
+                      <div style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}`, borderRadius: 12, padding: 20, width: "min(92vw,360px)", maxHeight: "88vh", overflowY: "auto" }}>
+                        <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{SCHED_DAYS_SHORT[date.getDay()]} {date.getDate()}/{date.getMonth()+1} — {room}</h3>
+                        <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginBottom: 12 }}>Assign host & toko ke ruangan ini</div>
+                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 4 }}>Host</div>
+                        <select value={schedEditCtx.hostId || entry?.hostId || ""} onChange={(e) => { setSchedEditCtx((c) => ({ ...c, hostId: e.target.value })); setSchedSesiStarts([]); }}
+                          style={{ width: "100%", border: `1px solid ${PALETTE.line}`, borderRadius: 6, padding: "5px 7px", fontSize: 12, marginBottom: 10 }}>
+                          <option value="">— Pilih host —</option>
+                          {schedHosts.filter((h) => !dayOff.includes(h.id)).map((h) => (
+                            <option key={h.id} value={h.id}>{h.name} ({h.sessions.join("+")} jam)</option>
+                          ))}
+                        </select>
+                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 4 }}>Toko</div>
+                        <select defaultValue={entry?.toko || ""} id="scedTokoSel"
+                          style={{ width: "100%", border: `1px solid ${PALETTE.line}`, borderRadius: 6, padding: "5px 7px", fontSize: 12, marginBottom: 10 }}>
+                          <option value="">— Pilih toko —</option>
+                          {liveAccountOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                        </select>
+                        {selHost && (
+                          <div>
+                            <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 6 }}>Sesi live — {selHost.sessions.length} sesi ({selHost.sessions.join("+")} jam)</div>
+                            {selHost.sessions.map((dur, si) => {
+                              const cur = schedSesiStarts[si] ?? null;
+                              return (
+                                <div key={si} style={{ background: PALETTE.panelAlt, borderRadius: 8, padding: 8, marginBottom: 6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 4 }}>Sesi {si+1} · {dur}j</div>
+                                  <div style={{ display: "grid", gridTemplateColumns: "repeat(8,1fr)", gap: 3 }}>
+                                    {Array.from({ length: 25-dur }, (_, hr) => (
+                                      <button key={hr} onClick={() => setSchedSesiStarts((prev) => { const n=[...prev]; n[si]=hr; return n; })}
+                                        style={{ padding: "3px 1px", borderRadius: 4, border: `1px solid ${cur===hr?selHost.color:"#ddd"}`, fontSize: 9, cursor: "pointer", textAlign: "center", background: cur===hr?selHost.color:"#f8f8f6", color: cur===hr?"#fff":"#555" }}>
+                                        {String(hr).padStart(2,"0")}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  {cur != null && <div style={{ fontSize: 9, color: selHost.color, marginTop: 3 }}>▸ {String(cur).padStart(2,"0")}:00–{String(cur+dur).padStart(2,"00")}:00</div>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                          <button onClick={async () => { await saveSchedSlot(date, room, null); setShowSchedSidebar(false); setSchedEditCtx(null); }}
+                            style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${LIVE_ACCENT}`, background: "#fff0f0", color: LIVE_ACCENT, fontSize: 12, cursor: "pointer" }}>Hapus</button>
+                          <button onClick={() => { setShowSchedSidebar(false); setSchedEditCtx(null); }}
+                            style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${PALETTE.line}`, background: PALETTE.panel, color: PALETTE.inkSoft, fontSize: 12, cursor: "pointer" }}>Batal</button>
+                          <button onClick={async () => {
+                            const hostId = schedEditCtx.hostId || entry?.hostId;
+                            const toko = document.getElementById("scedTokoSel")?.value;
+                            if (!hostId) { showToast("error", "Pilih host dulu."); return; }
+                            await saveSchedSlot(date, room, { hostId, toko: toko || "", starts: [...schedSesiStarts] });
+                            setShowSchedSidebar(false); setSchedEditCtx(null);
+                          }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", background: SCHED_ACCENT, color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>Simpan</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+                {/* legend */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {schedHosts.map((h) => (
+                    <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: PALETTE.inkSoft }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 3, background: h.bg, border: `1px solid ${h.color}` }} />
+                      <span style={{ color: h.color, fontWeight: 600 }}>{h.name}</span>
+                      <span>({h.sessions.join("+")}j)</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {/* rekap mingguan */}
+            {schedRecapView && (
+              <Card>
+                <SectionTitle eyebrow={fmtWeekLabel()} title="Rekap Kehadiran Live" />
+                <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>
+                  Perbandingan jadwal yang sudah diset vs data Live Tracker aktual. "Sesuai" = host live pada hari yang sama dengan waktu yang overlapping dengan jadwal.
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm" style={{ minWidth: 640 }}>
+                    <thead>
+                      <tr style={{ color: PALETTE.inkSoft }}>
+                        <th className="font-medium py-1.5 pr-3 text-left">Host</th>
+                        {schedWeekDays.map((d, i) => (
+                          <th key={i} className="font-medium py-1.5 px-2 text-center" style={{ fontSize: 11 }}>
+                            {SCHED_DAYS_SHORT[d.getDay()]}<br />{d.getDate()}/{d.getMonth()+1}
+                          </th>
+                        ))}
+                        <th className="font-medium py-1.5 px-2 text-center">Total Hari</th>
+                        <th className="font-medium py-1.5 px-2 text-center">Total GMV Live</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {schedHosts.map((h) => {
+                        let totalOnTime = 0, totalScheduled = 0, totalGmv = 0;
+                        const dayCells = recapData.map((day) => {
+                          const hd = day.hosts.find((x) => x.host.id === h.id);
+                          if (!hd) return null;
+                          if (hd.status === "unscheduled") return { status: "unscheduled" };
+                          if (hd.status === "off") return { status: "off" };
+                          totalScheduled++;
+                          if (hd.status === "on_time" || hd.status === "partial") totalOnTime++;
+                          if (hd.compliance?.totalGmv) totalGmv += hd.compliance.totalGmv;
+                          return hd;
+                        });
+                        return (
+                          <tr key={h.id} className="border-t" style={{ borderColor: PALETTE.line }}>
+                            <td className="py-2 pr-3">
+                              <div className="flex items-center gap-1.5">
+                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: h.color, display: "inline-block" }} />
+                                <span className="font-semibold text-xs">{h.name}</span>
+                              </div>
+                              <div style={{ fontSize: 9, color: PALETTE.inkSoft }}>{h.sessions.join("+")}j/hari</div>
+                            </td>
+                            {dayCells.map((cell, ci) => {
+                              if (!cell || cell.status === "unscheduled") return (
+                                <td key={ci} className="py-2 px-2 text-center" style={{ fontSize: 10, color: PALETTE.inkFaint }}>—</td>
+                              );
+                              if (cell.status === "off") return (
+                                <td key={ci} className="py-2 px-2 text-center" style={{ fontSize: 10, color: PALETTE.inkFaint }}>OFF</td>
+                              );
+                              const sc = statusColor[cell.status] || PALETTE.inkSoft;
+                              const sl = statusLabel[cell.status] || cell.status;
+                              return (
+                                <td key={ci} className="py-2 px-1 text-center">
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: sc }}>{sl}</div>
+                                  {cell.compliance?.totalGmv > 0 && (
+                                    <div style={{ fontSize: 9, color: PALETTE.inkSoft }}>{fmtCompactRp(cell.compliance.totalGmv)}</div>
+                                  )}
+                                  {cell.slot?.toko && <div style={{ fontSize: 8, color: PALETTE.inkFaint }}>{cell.slot.toko}</div>}
+                                </td>
+                              );
+                            })}
+                            <td className="py-2 px-2 text-center">
+                              <div style={{ fontSize: 11, fontWeight: 700, color: totalScheduled > 0 ? (totalOnTime === totalScheduled ? SCHED_ACCENT : totalOnTime > 0 ? "#F59E0B" : LIVE_ACCENT) : PALETTE.inkFaint }}>
+                                {totalScheduled > 0 ? `${totalOnTime}/${totalScheduled}` : "—"}
+                              </div>
+                              {totalScheduled > 0 && <div style={{ fontSize: 9, color: PALETTE.inkSoft }}>hari sesuai</div>}
+                            </td>
+                            <td className="py-2 px-2 text-center">
+                              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: PALETTE.ink }}>{totalGmv > 0 ? fmtCompactRp(totalGmv) : "—"}</div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+
+            {/* kelola host jadwal */}
+            {isAdmin && (
+              <Card>
+                <SectionTitle title="Kelola Host Jadwal" eyebrow="Hanya admin" />
+                <div className="text-xs mb-3" style={{ color: PALETTE.inkSoft }}>
+                  Tambahkan host ke grid jadwal minggu ini dengan mengatur pola sesi dan warna. Nama dipilih dari daftar host bersama (sama dengan Live Tracker). Untuk tambah nama baru, kelola di tab <b>Live Tracker → Kelola Daftar Host</b>.
+                </div>
+                <div className="flex items-end gap-2 flex-wrap mb-4 p-3 rounded-xl" style={{ background: PALETTE.panelAlt }}>
+                  <div style={{ flex: "1 1 140px" }}>
+                    <label style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4, color: PALETTE.inkSoft }}>Nama Host</label>
+                    <select value={schedNewName} onChange={(e) => setSchedNewName(e.target.value)}
+                      className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: SCHED_SOFT }}>
+                      <option value="">Pilih nama host…</option>
+                      {hostNames.filter((n) => !schedHosts.some((h) => h.name === n)).map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ flex: "1 1 100px" }}>
+                    <label style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4, color: PALETTE.inkSoft }}>Sesi (jam, pisahkan koma)</label>
+                    <input type="text" value={schedNewSessions} onChange={(e) => setSchedNewSessions(e.target.value)} placeholder="2,2"
+                      className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: SCHED_SOFT }} />
+                    <div style={{ fontSize: 9, color: PALETTE.inkFaint, marginTop: 2 }}>contoh: 2,2 = 2 sesi masing-masing 2 jam</div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4, color: PALETTE.inkSoft }}>Warna</label>
+                    <input type="color" value={schedNewColor} onChange={(e) => setSchedNewColor(e.target.value)}
+                      style={{ width: 36, height: 34, border: `1px solid ${PALETTE.line}`, borderRadius: 6, cursor: "pointer", padding: 2 }} />
+                  </div>
+                  <button onClick={addSchedHost} className={`${btnClass} flex items-center gap-1.5`}
+                    style={{ background: `linear-gradient(135deg,${SCHED_ACCENT},${SCHED_DEEP})`, color: "#fff" }}>
+                    <PlusCircle size={14} />Tambah Host
+                  </button>
+                </div>
+                {schedHosts.length === 0 ? (
+                  <div style={{ fontSize: 13, color: PALETTE.inkFaint, padding: "8px 0" }}>Belum ada host. Tambahkan host dulu sebelum mengisi jadwal.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {schedHosts.map((h) => (
+                      <div key={h.id} className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: PALETTE.panelAlt }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: h.color, flexShrink: 0 }} />
+                        <span className="text-sm font-semibold flex-1">{h.name}</span>
+                        <span style={{ fontSize: 11, color: PALETTE.inkSoft }}>Sesi: {h.sessions.join(" + ")} jam</span>
+                        <button onClick={() => removeSchedHost(h.id)} style={{ color: LIVE_ACCENT, background: "none", border: "none", cursor: "pointer" }}><Trash2 size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ===================== TARGET & AKUN ===================== */}
       {tab === "settings" && (
