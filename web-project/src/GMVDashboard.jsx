@@ -1807,32 +1807,107 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   // "Sesuai" = nama host sama, tanggal sama, dan ada irisan waktu antara jadwal & aktual.
   const checkSchedCompliance = useCallback((hostName, dateStr, scheduledStarts, sessionDurations) => {
     if (!scheduledStarts?.length) return null;
-    const matches = liveSessions.filter((s) =>
+    // Ambil semua sesi live aktual host ini di tanggal itu
+    const actualSessions = liveSessions.filter((s) =>
       s.date === dateStr &&
       s.hostName?.toLowerCase().trim() === hostName?.toLowerCase().trim()
     );
-    if (!matches.length) return { status: "absent", sessions: [] };
-    const results = scheduledStarts.map((start, si) => {
-      if (start == null) return { scheduled: null, actual: null, status: "unset" };
+
+    const totalSchedHours = scheduledStarts.reduce((s, st, si) => st != null ? s + (sessionDurations[si] || 2) : s, 0);
+    const totalActualHours = actualSessions.reduce((s, m) => s + (calcLiveHours(m.startTime, m.endTime) || 0), 0);
+    const totalActualGmv = actualSessions.reduce((s, m) => s + (m.directGmv || 0), 0);
+
+    if (!scheduledStarts?.length) return null;
+    if (!actualSessions.length) return { status: "absent", totalSchedHours, totalActualHours: 0, totalActualGmv: 0, detail: "Tidak live" };
+
+    // Evaluasi tiap sesi yang dijadwalkan
+    const sessionResults = scheduledStarts.map((start, si) => {
+      if (start == null) return { status: "unset" };
       const dur = sessionDurations[si] || 2;
       const schedEnd = start + dur;
-      const found = matches.find((m) => {
-        const aStart = m.startTime ? parseInt(m.startTime.split(":")[0]) : null;
-        const aEnd = m.endTime ? parseInt(m.endTime.split(":")[0]) : null;
-        if (aStart === null || aEnd === null) return false;
-        return aStart < schedEnd && aEnd > start; // overlap
+
+      // Cari sesi aktual yang paling banyak overlap dengan jadwal ini
+      let bestMatch = null, bestOverlap = 0;
+      actualSessions.forEach((m) => {
+        const aS = m.startTime ? parseInt(m.startTime.split(":")[0]) : null;
+        const aE = m.endTime   ? parseInt(m.endTime.split(":")[0])   : null;
+        if (aS === null || aE === null) return;
+        const overlapH = Math.max(0, Math.min(aE, schedEnd) - Math.max(aS, start));
+        if (overlapH > bestOverlap) { bestOverlap = overlapH; bestMatch = m; }
       });
-      return found
-        ? { scheduled: start, actual: parseInt(found.startTime), gmv: found.directGmv, status: "on_time" }
-        : { scheduled: start, actual: null, gmv: 0, status: "missed" };
+
+      const schedLabel = `${String(start).padStart(2,"0")}:00–${String(schedEnd).padStart(2,"00")}:00`;
+
+      if (bestMatch && bestOverlap > 0) {
+        const aS = parseInt(bestMatch.startTime.split(":")[0]);
+        const aE = parseInt(bestMatch.endTime.split(":")[0]);
+        const actualDur = aE - aS;
+        const actualLabel = `${String(aS).padStart(2,"0")}:00–${String(aE).padStart(2,"00")}:00`;
+        const overlapPct = bestOverlap / dur;
+        // Sesuai: overlap ≥ 70% jadwal dan durasi aktual ≥ 80% jadwal
+        if (overlapPct >= 0.7 && actualDur >= dur * 0.8) {
+          return { status: "on_time", schedLabel, actualLabel, dur, actualDur };
+        }
+        // Live ada overlap tapi durasi kurang (live lebih pendek dari jadwal)
+        if (overlapPct >= 0.4) {
+          return { status: "short", schedLabel, actualLabel, dur, actualDur, detail: `Live ${actualDur}j dari ${dur}j terjadwal` };
+        }
+      }
+
+      // Tidak ada overlap — cek apakah ada live di waktu lain (wrong_time)
+      const anyLive = actualSessions.find((m) => {
+        const aS = m.startTime ? parseInt(m.startTime.split(":")[0]) : null;
+        const aE = m.endTime   ? parseInt(m.endTime.split(":")[0])   : null;
+        return aS !== null && aE !== null;
+      });
+      if (anyLive) {
+        const aS = parseInt(anyLive.startTime.split(":")[0]);
+        const aE = parseInt(anyLive.endTime.split(":")[0]);
+        const actualLabel = `${String(aS).padStart(2,"0")}:00–${String(aE).padStart(2,"00")}:00`;
+        return { status: "wrong_time", schedLabel, actualLabel, dur, actualDur: aE - aS, detail: `Jadwal ${schedLabel} → live ${actualLabel}` };
+      }
+
+      return { status: "missed", schedLabel, dur, detail: `Jadwal ${schedLabel} tidak terlaksana` };
     });
-    const allOnTime = results.every((r) => r.status === "on_time" || r.status === "unset");
-    const anyOnTime = results.some((r) => r.status === "on_time");
-    return {
-      status: allOnTime ? "on_time" : anyOnTime ? "partial" : "missed",
-      sessions: results,
-      totalGmv: matches.reduce((s, m) => s + (m.directGmv || 0), 0),
-    };
+
+    const validResults = sessionResults.filter((r) => r.status !== "unset");
+    const allOnTime    = validResults.every((r) => r.status === "on_time");
+    const allMissed    = validResults.every((r) => r.status === "missed");
+    const hasWrongTime = validResults.some((r)  => r.status === "wrong_time");
+    const hasShort     = validResults.some((r)  => r.status === "short");
+    const anyOnTime    = validResults.some((r)  => r.status === "on_time");
+
+    let overallStatus;
+    if (allOnTime)    overallStatus = "on_time";
+    else if (allMissed) overallStatus = "missed";
+    else if (hasWrongTime && !anyOnTime && !hasShort) overallStatus = "wrong_time";
+    else if (hasShort && !anyOnTime && !hasWrongTime) overallStatus = "short";
+    else overallStatus = "partial";
+
+    // Bangun keterangan ringkas untuk kolom tabel
+    let detail = "";
+    const hourDiff = totalActualHours - totalSchedHours;
+    if (overallStatus === "on_time") {
+      detail = `✓ Sesuai`;
+    } else if (overallStatus === "wrong_time") {
+      detail = `⚠ Tidak sesuai jadwal${totalActualGmv > 0 ? " (ada GMV)" : ""}`;
+      // Tampilkan detail jam dari sesi pertama yang wrong_time
+      const wt = validResults.find((r) => r.status === "wrong_time");
+      if (wt) detail += `\n${wt.detail}`;
+    } else if (overallStatus === "short") {
+      detail = `⏱ Live ${totalActualHours.toFixed(1)}j dari ${totalSchedHours.toFixed(1)}j terjadwal`;
+    } else if (overallStatus === "partial") {
+      detail = `~ Sebagian sesuai`;
+      if (totalActualHours > 0 && Math.abs(hourDiff) >= 0.5) {
+        detail += `\nLive ${totalActualHours.toFixed(1)}j dari ${totalSchedHours.toFixed(1)}j`;
+      }
+      const wt = validResults.find((r) => r.status === "wrong_time");
+      if (wt) detail += `\n${wt.detail}`;
+    } else {
+      detail = `✗ Tidak live`;
+    }
+
+    return { status: overallStatus, sessions: sessionResults, totalActualGmv, totalSchedHours, totalActualHours, detail };
   }, [liveSessions]);
 
   const saveAccountsAndBenchmarks = async () => {
@@ -3455,8 +3530,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           };
         });
 
-        const statusColor = { on_time: SCHED_ACCENT, partial: "#F59E0B", missed: LIVE_ACCENT, off: PALETTE.inkFaint, unscheduled: PALETTE.inkFaint, absent: LIVE_ACCENT, scheduled: PALETTE.inkSoft };
-        const statusLabel = { on_time: "✓ Sesuai", partial: "~ Sebagian", missed: "✗ Tidak live", off: "OFF", unscheduled: "—", absent: "✗ Tidak live", scheduled: "Terjadwal" };
+        const statusColor = {
+          on_time: SCHED_ACCENT,
+          partial: "#F59E0B",
+          wrong_time: "#D97706", // amber — ada live tapi tidak sesuai jadwal
+          short: "#7C3AED",     // ungu — live tapi kurang jam
+          missed: LIVE_ACCENT,
+          absent: LIVE_ACCENT,
+          off: PALETTE.inkFaint,
+          unscheduled: PALETTE.inkFaint,
+          scheduled: PALETTE.inkSoft
+        };
+        // Label dan detail kini diambil langsung dari compliance.detail
 
         return (
           <div className="space-y-5">
@@ -3469,7 +3554,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: PALETTE.line }}>
-                    {[["view","👁 View"],["edit","✏️ Edit"]].map(([m,l]) => (
+                    {(isAdmin ? [["view","👁 View"],["edit","✏️ Edit"]] : [["view","👁 View"]]).map(([m,l]) => (
                       <button key={m} onClick={() => setSchedMode(m)} className="text-xs px-3 py-1.5 font-semibold transition-all"
                         style={{ background: schedMode === m ? `linear-gradient(135deg,${SCHED_ACCENT},${SCHED_DEEP})` : PALETTE.panel, color: schedMode === m ? "#fff" : PALETTE.inkSoft }}>{l}</button>
                     ))}
@@ -3597,7 +3682,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                             <option key={h.id} value={h.id}>{h.name} ({h.sessions.join("+")} jam)</option>
                           ))}
                         </select>
-                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 4 }}>Toko</div>
+                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 2 }}>Toko</div>
+                        <div style={{ fontSize: 8.5, color: PALETTE.inkFaint, marginBottom: 4 }}>Toko baru? Tambah di Live Tracker → Kelola Toko Live-Only</div>
                         <select defaultValue={entry?.toko || ""} id="scedTokoSel"
                           style={{ width: "100%", border: `1px solid ${PALETTE.line}`, borderRadius: 6, padding: "5px 7px", fontSize: 12, marginBottom: 10 }}>
                           <option value="">— Pilih toko —</option>
@@ -3678,15 +3764,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                     </thead>
                     <tbody>
                       {schedHosts.map((h) => {
-                        let totalOnTime = 0, totalScheduled = 0, totalGmv = 0;
+                        let totalOnTime = 0, totalWrongTime = 0, totalShort = 0, totalMissed = 0, totalScheduled = 0, totalGmv = 0;
                         const dayCells = recapData.map((day) => {
                           const hd = day.hosts.find((x) => x.host.id === h.id);
                           if (!hd) return null;
                           if (hd.status === "unscheduled") return { status: "unscheduled" };
                           if (hd.status === "off") return { status: "off" };
                           totalScheduled++;
-                          if (hd.status === "on_time" || hd.status === "partial") totalOnTime++;
-                          if (hd.compliance?.totalGmv) totalGmv += hd.compliance.totalGmv;
+                          if (hd.status === "on_time") totalOnTime++;
+                          else if (hd.status === "wrong_time") totalWrongTime++;
+                          else if (hd.status === "short") totalShort++;
+                          else if (hd.status === "missed" || hd.status === "absent") totalMissed++;
+                          if (hd.compliance?.totalActualGmv) totalGmv += hd.compliance.totalActualGmv;
                           return hd;
                         });
                         return (
@@ -3706,22 +3795,29 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                                 <td key={ci} className="py-2 px-2 text-center" style={{ fontSize: 10, color: PALETTE.inkFaint }}>OFF</td>
                               );
                               const sc = statusColor[cell.status] || PALETTE.inkSoft;
-                              const sl = statusLabel[cell.status] || cell.status;
+                              const detailLines = (cell.compliance?.detail || cell.status).split("\n");
                               return (
-                                <td key={ci} className="py-2 px-1 text-center">
-                                  <div style={{ fontSize: 10, fontWeight: 700, color: sc }}>{sl}</div>
-                                  {cell.compliance?.totalGmv > 0 && (
-                                    <div style={{ fontSize: 9, color: PALETTE.inkSoft }}>{fmtCompactRp(cell.compliance.totalGmv)}</div>
+                                <td key={ci} className="py-2 px-1 text-center" style={{ verticalAlign: "top" }}>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: sc, whiteSpace: "nowrap" }}>{detailLines[0]}</div>
+                                  {detailLines.slice(1).map((line, li) => (
+                                    <div key={li} style={{ fontSize: 8.5, color: PALETTE.inkSoft, marginTop: 1, whiteSpace: "nowrap" }}>{line}</div>
+                                  ))}
+                                  {cell.compliance?.totalActualGmv > 0 && (
+                                    <div style={{ fontSize: 9, color: PALETTE.inkSoft, marginTop: 1 }}>{fmtCompactRp(cell.compliance.totalActualGmv)}</div>
                                   )}
-                                  {cell.slot?.toko && <div style={{ fontSize: 8, color: PALETTE.inkFaint }}>{cell.slot.toko}</div>}
+                                  {cell.slot?.toko && <div style={{ fontSize: 8, color: PALETTE.inkFaint, marginTop: 1 }}>{cell.slot.toko}</div>}
                                 </td>
                               );
                             })}
-                            <td className="py-2 px-2 text-center">
-                              <div style={{ fontSize: 11, fontWeight: 700, color: totalScheduled > 0 ? (totalOnTime === totalScheduled ? SCHED_ACCENT : totalOnTime > 0 ? "#F59E0B" : LIVE_ACCENT) : PALETTE.inkFaint }}>
-                                {totalScheduled > 0 ? `${totalOnTime}/${totalScheduled}` : "—"}
-                              </div>
-                              {totalScheduled > 0 && <div style={{ fontSize: 9, color: PALETTE.inkSoft }}>hari sesuai</div>}
+                            <td className="py-2 px-2 text-center" style={{ verticalAlign: "top" }}>
+                              {totalScheduled > 0 ? (
+                                <div style={{ fontSize: 10 }}>
+                                  {totalOnTime > 0 && <div style={{ color: SCHED_ACCENT, fontWeight: 700 }}>✓ {totalOnTime} sesuai</div>}
+                                  {totalWrongTime > 0 && <div style={{ color: "#D97706", fontWeight: 600 }}>⚠ {totalWrongTime} tdk sesuai</div>}
+                                  {totalShort > 0 && <div style={{ color: "#7C3AED", fontWeight: 600 }}>⏱ {totalShort} kurang jam</div>}
+                                  {totalMissed > 0 && <div style={{ color: LIVE_ACCENT, fontWeight: 600 }}>✗ {totalMissed} tdk live</div>}
+                                </div>
+                              ) : <div style={{ fontSize: 10, color: PALETTE.inkFaint }}>—</div>}
                             </td>
                             <td className="py-2 px-2 text-center">
                               <div style={{ fontSize: 11, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: PALETTE.ink }}>{totalGmv > 0 ? fmtCompactRp(totalGmv) : "—"}</div>
