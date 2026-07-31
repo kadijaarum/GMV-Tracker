@@ -1719,33 +1719,45 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const schedWeekKey = weekKey(schedWeekStart);
   const schedWeekDays = Array.from({ length: 7 }, (_, i) => { const d = new Date(schedWeekStart); d.setDate(d.getDate() + i); return d; });
 
-  const getSchedDay = useCallback((date) => {
-    const dk = ymd(date);
-    const wk = weekKey(date);
-    return schedData[wk]?.slots?.[dk] || {};
+  // ---- Struktur slot BARU: room → [{ id, hostId, toko, startHour, endHour }]
+  // Satu ruangan bisa punya BANYAK assignment host di jam yang berbeda (bahkan bersamaan).
+  const getRoomAssignments = useCallback((date, room) => {
+    const dk = ymd(date), wk = weekKey(date);
+    const raw = schedData[wk]?.slots?.[dk]?.[room];
+    return Array.isArray(raw) ? raw : [];
   }, [schedData]);
 
   const getSchedOff = useCallback((date) => {
-    const dk = ymd(date);
-    const wk = weekKey(date);
+    const dk = ymd(date), wk = weekKey(date);
     return schedData[wk]?.off?.[dk] || [];
   }, [schedData]);
 
-  const saveSchedSlot = async (date, room, slotData) => {
-    const dk = ymd(date);
-    const wk = weekKey(date);
+  const addSchedAssignment = async (date, room, assignment) => {
+    const dk = ymd(date), wk = weekKey(date);
     const next = JSON.parse(JSON.stringify(schedData));
     if (!next[wk]) next[wk] = { slots: {}, off: {} };
     if (!next[wk].slots[dk]) next[wk].slots[dk] = {};
-    if (slotData) next[wk].slots[dk][room] = slotData;
-    else delete next[wk].slots[dk][room];
+    const arr = Array.isArray(next[wk].slots[dk][room]) ? next[wk].slots[dk][room] : [];
+    arr.push({ ...assignment, id: `${Date.now()}-${Math.random().toString(36).slice(2,6)}` });
+    next[wk].slots[dk][room] = arr;
     setSchedData(next);
-    try { await safeSet(SCHEDULE_DATA_KEY, next); } catch (e) { showToast("error", `Gagal simpan jadwal: ${e.message}`); }
+    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    catch (e) { showToast("error", `Gagal simpan jadwal: ${e.message}`); }
+  };
+
+  const removeSchedAssignment = async (date, room, assignmentId) => {
+    const dk = ymd(date), wk = weekKey(date);
+    const next = JSON.parse(JSON.stringify(schedData));
+    const arr = next[wk]?.slots?.[dk]?.[room];
+    if (!Array.isArray(arr)) return;
+    next[wk].slots[dk][room] = arr.filter((a) => a.id !== assignmentId);
+    setSchedData(next);
+    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    catch (e) { showToast("error", `Gagal hapus: ${e.message}`); }
   };
 
   const toggleSchedOff = async (date, hostId) => {
-    const dk = ymd(date);
-    const wk = weekKey(date);
+    const dk = ymd(date), wk = weekKey(date);
     const next = JSON.parse(JSON.stringify(schedData));
     if (!next[wk]) next[wk] = { slots: {}, off: {} };
     if (!next[wk].off[dk]) next[wk].off[dk] = [];
@@ -1753,7 +1765,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     const idx = arr.indexOf(hostId);
     if (idx >= 0) arr.splice(idx, 1); else arr.push(hostId);
     setSchedData(next);
-    try { await safeSet(SCHEDULE_DATA_KEY, next); } catch (e) { showToast("error", `Gagal simpan off: ${e.message}`); }
+    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    catch (e) { showToast("error", `Gagal simpan off: ${e.message}`); }
   };
 
   // Daftar nama host bersama — dipakai di Live Tracker (dropdown nama) dan Jadwal (pilih nama saat tambah host)
@@ -3573,26 +3586,25 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </Card>
 
             {/* grid jadwal */}
+            {/* grid jadwal */}
             {!schedRecapView && (
               <Card>
-                <div className="overflow-x-auto" style={{ maxHeight: "70vh", overflowY: "auto" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(52px,1fr))`, minWidth: 800 }}>
+                <div className="overflow-x-auto" style={{ maxHeight: "75vh", overflowY: "auto" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(70px,1fr))`, minWidth: 900 }}>
                     {/* corner */}
-                    <div style={{ gridRow: "1/3", padding: "4px 2px", fontSize: 10, color: PALETTE.inkSoft, textAlign: "center", borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, display: "flex", alignItems: "center", justifyContent: "center", background: PALETTE.panelAlt }}>Jam</div>
+                    <div style={{ gridRow:"1/3", padding:"4px 2px", fontSize:9, color:PALETTE.inkSoft, textAlign:"center", borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt }}>Jam</div>
                     {/* day headers */}
                     {schedWeekDays.map((d, di) => {
-                      const dk = ymd(d);
-                      const isToday = dk === todayStr();
-                      const dayOff = wData.off?.[dk] || [];
+                      const dk = ymd(d), isToday = dk === todayStr(), dayOff = wData.off?.[dk] || [];
                       return (
-                        <div key={di} style={{ gridColumn: `${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding: "4px 2px", fontSize: 10, fontWeight: 700, textAlign: "center", color: isToday ? SCHED_ACCENT : PALETTE.ink, background: isToday ? SCHED_SOFT : PALETTE.panelAlt, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}` }}>
+                        <div key={di} style={{ gridColumn:`${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding:"4px 2px", fontSize:10, fontWeight:700, textAlign:"center", color:isToday?SCHED_ACCENT:PALETTE.ink, background:isToday?SCHED_SOFT:PALETTE.panelAlt, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}` }}>
                           <div>{SCHED_DAYS_SHORT[d.getDay()]} {d.getDate()}/{d.getMonth()+1}</div>
-                          {dayOff.length > 0 && <div style={{ fontSize: 8, color: LIVE_ACCENT }}>OFF: {dayOff.map(id => schedHosts.find(h=>h.id===id)?.name||id).join(", ")}</div>}
+                          {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {dayOff.map(id=>schedHosts.find(h=>h.id===id)?.name||id).join(", ")}</div>}
                           {schedMode === "edit" && (
-                            <div style={{ marginTop: 2, display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 2 }}>
+                            <div style={{ marginTop:2, display:"flex", flexWrap:"wrap", justifyContent:"center", gap:2 }}>
                               {schedHosts.map((h) => (
                                 <button key={h.id} onClick={() => toggleSchedOff(d, h.id)}
-                                  style={{ fontSize: 7, padding: "1px 4px", borderRadius: 3, border: `1px solid ${dayOff.includes(h.id) ? LIVE_ACCENT : "#ddd"}`, background: dayOff.includes(h.id) ? "#FFE4E9" : "#fff", color: dayOff.includes(h.id) ? LIVE_ACCENT : PALETTE.inkSoft, cursor: "pointer" }}>
+                                  style={{ fontSize:7, padding:"1px 4px", borderRadius:3, border:`1px solid ${dayOff.includes(h.id)?LIVE_ACCENT:"#ddd"}`, background:dayOff.includes(h.id)?"#FFE4E9":"#fff", color:dayOff.includes(h.id)?LIVE_ACCENT:PALETTE.inkSoft, cursor:"pointer" }}>
                                   {h.name}
                                 </button>
                               ))}
@@ -3604,55 +3616,44 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                     {/* room sub-headers */}
                     {schedWeekDays.map((d, di) =>
                       SCHEDULE_ROOMS.map((room, ri) => (
-                        <div key={`rh-${di}-${ri}`} style={{ fontSize: 8, padding: "2px 1px", textAlign: "center", color: PALETTE.inkSoft, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, background: PALETTE.panelAlt }}>
-                          {room.replace("Ruang ", "R")}
+                        <div key={`rh-${di}-${ri}`} style={{ fontSize:8, padding:"2px 1px", textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, background:PALETTE.panelAlt }}>
+                          {room.replace("Ruang ","R")}
                         </div>
                       ))
                     )}
-                    {/* hour rows */}
+                    {/* hour rows — label jam pakai range 08:00-09:00 */}
                     {Array.from({ length: 24 }, (_, hr) => (
                       <React.Fragment key={hr}>
-                        <div style={{ fontSize: 9, textAlign: "center", color: PALETTE.inkSoft, borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`, padding: "1px 2px", display: "flex", alignItems: "center", justifyContent: "center", background: PALETTE.panelAlt }}>
-                          {String(hr).padStart(2,"0")}:00
+                        <div style={{ fontSize:8, textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, padding:"2px 1px", display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt, whiteSpace:"nowrap" }}>
+                          {String(hr).padStart(2,"0")}:00–{String(hr+1).padStart(2,"00")}:00
                         </div>
                         {schedWeekDays.map((d, di) => {
-                          const dk = ymd(d);
-                          const daySlots = wData.slots?.[dk] || {};
-                          const dayOff = wData.off?.[dk] || [];
+                          const dk = ymd(d), daySlots = wData.slots?.[dk] || {}, dayOff = wData.off?.[dk] || [];
                           return SCHEDULE_ROOMS.map((room, ri) => {
-                            const entry = daySlots[room];
-                            const h = entry?.hostId ? schedHosts.find((x) => x.id === entry.hostId) : null;
-                            const isOff = h && dayOff.includes(h.id);
-                            let active = false, isStart = false;
-                            if (h && !isOff && entry.starts) {
+                            const rawEntry = daySlots[room];
+                            const assignments = Array.isArray(rawEntry) ? rawEntry : (rawEntry?.hostId ? [rawEntry] : []);
+                            const activeList = assignments.map((asn) => {
+                              const h = schedHosts.find((x) => x.id === asn.hostId);
+                              if (!h || dayOff.includes(h.id) || !asn.starts) return null;
+                              let active = false, isStart = false;
                               h.sessions.forEach((dur, si) => {
-                                const st = entry.starts[si];
-                                if (st != null && hr >= st && hr < st + dur) active = true;
+                                const st = asn.starts[si];
+                                if (st != null && hr >= st && hr < st+dur) active = true;
                                 if (st === hr) isStart = true;
                               });
-                            }
-                            const cellStyle = {
-                              borderRight: `1px solid ${PALETTE.line}`, borderBottom: `1px solid ${PALETTE.line}`,
-                              minHeight: 20, display: "flex", alignItems: "center", justifyContent: "center",
-                              background: active ? h.bg : PALETTE.bg || "#fff",
-                              cursor: schedMode === "edit" ? "pointer" : "default",
-                            };
+                              return active ? { h, asn, isStart } : null;
+                            }).filter(Boolean);
                             return (
-                              <div key={`cell-${di}-${ri}-${hr}`} style={cellStyle}
-                                onClick={() => {
-                                  if (schedMode !== "edit") return;
-                                  setSchedEditCtx({ date: d, room });
-                                  setSchedSesiStarts(entry?.starts ? [...entry.starts] : []);
-                                  setShowSchedSidebar(true);
-                                }}>
-                                {active && (
-                                  <div style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", padding: "0 2px", width: "100%", textAlign: "center", fontSize: 8, lineHeight: 1.3, fontWeight: 600, color: h.color }}>
-                                    {isStart ? `${h.name}▸` : h.name}
-                                    {isStart && entry.toko ? <div style={{ fontSize: 7, opacity: 0.7 }}>{entry.toko}</div> : null}
+                              <div key={`cell-${di}-${ri}-${hr}`}
+                                style={{ borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, minHeight:24, cursor:schedMode==="edit"?"pointer":"default", position:"relative" }}
+                                onClick={() => { if (schedMode!=="edit") return; setSchedEditCtx({date:d,room}); setSchedSesiStarts([]); setShowSchedSidebar(true); }}>
+                                {activeList.map(({ h, asn, isStart }, ai) => (
+                                  <div key={asn.id||ai} style={{ background:h.bg, borderLeft:`2px solid ${h.color}`, padding:"1px 3px", fontSize:8, lineHeight:1.4, fontWeight:600, color:h.color, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                                    {isStart ? `${h.name}${asn.toko ? ` · ${asn.toko}` : ""}` : h.name}
                                   </div>
-                                )}
-                                {!active && schedMode === "edit" && (
-                                  <span style={{ fontSize: 7, opacity: 0.15, color: PALETTE.inkSoft }}>+</span>
+                                ))}
+                                {activeList.length===0 && schedMode==="edit" && (
+                                  <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100%", fontSize:9, opacity:0.1, color:PALETTE.inkSoft }}>+</div>
                                 )}
                               </div>
                             );
@@ -3662,83 +3663,120 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                     ))}
                   </div>
                 </div>
-                {/* sidebar edit slot */}
+
+                {/* SIDEBAR EDIT — multiple host per room */}
                 {showSchedSidebar && schedEditCtx && (() => {
                   const { date, room } = schedEditCtx;
                   const dk = ymd(date);
                   const dayOff = wData.off?.[dk] || [];
-                  const entry = wData.slots?.[dk]?.[room];
-                  const selHost = schedHosts.find((h) => h.id === (schedEditCtx.hostId || entry?.hostId));
+                  const rawEntry = wData.slots?.[dk]?.[room];
+                  const assignments = Array.isArray(rawEntry) ? rawEntry : (rawEntry?.hostId ? [rawEntry] : []);
+                  const selHost = schedHosts.find((h) => h.id === schedEditCtx.hostId);
+                  const usedHostIds = new Set(assignments.map((a) => a.hostId));
+                  const availableHosts = schedHosts.filter((h) => !dayOff.includes(h.id) && !usedHostIds.has(h.id));
                   return (
-                    <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(28,21,35,0.45)" }}>
-                      <div style={{ background: PALETTE.panel, border: `1px solid ${PALETTE.line}`, borderRadius: 12, padding: 20, width: "min(92vw,360px)", maxHeight: "88vh", overflowY: "auto" }}>
-                        <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{SCHED_DAYS_SHORT[date.getDay()]} {date.getDate()}/{date.getMonth()+1} — {room}</h3>
-                        <div style={{ fontSize: 11, color: PALETTE.inkSoft, marginBottom: 12 }}>Assign host & toko ke ruangan ini</div>
-                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 4 }}>Host</div>
-                        <select value={schedEditCtx.hostId || entry?.hostId || ""} onChange={(e) => { setSchedEditCtx((c) => ({ ...c, hostId: e.target.value })); setSchedSesiStarts([]); }}
-                          style={{ width: "100%", border: `1px solid ${PALETTE.line}`, borderRadius: 6, padding: "5px 7px", fontSize: 12, marginBottom: 10 }}>
-                          <option value="">— Pilih host —</option>
-                          {schedHosts.filter((h) => !dayOff.includes(h.id)).map((h) => (
-                            <option key={h.id} value={h.id}>{h.name} ({h.sessions.join("+")} jam)</option>
-                          ))}
-                        </select>
-                        <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 2 }}>Toko</div>
-                        <div style={{ fontSize: 8.5, color: PALETTE.inkFaint, marginBottom: 4 }}>Toko baru? Tambah di Live Tracker → Kelola Toko Live-Only</div>
-                        <select defaultValue={entry?.toko || ""} id="scedTokoSel"
-                          style={{ width: "100%", border: `1px solid ${PALETTE.line}`, borderRadius: 6, padding: "5px 7px", fontSize: 12, marginBottom: 10 }}>
-                          <option value="">— Pilih toko —</option>
-                          {liveAccountOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
-                        </select>
-                        {selHost && (
-                          <div>
-                            <div style={{ fontSize: 10, color: PALETTE.inkSoft, marginBottom: 6 }}>Sesi live — {selHost.sessions.length} sesi ({selHost.sessions.join("+")} jam)</div>
-                            {selHost.sessions.map((dur, si) => {
-                              const cur = schedSesiStarts[si] ?? null;
+                    <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(28,21,35,0.45)" }}>
+                      <div style={{ background:PALETTE.panel, border:`1px solid ${PALETTE.line}`, borderRadius:12, padding:20, width:"min(96vw,440px)", maxHeight:"90vh", overflowY:"auto" }}>
+                        <h3 style={{ fontSize:13, fontWeight:700, marginBottom:2 }}>{SCHED_DAYS_SHORT[date.getDay()]} {date.getDate()}/{date.getMonth()+1} — {room}</h3>
+                        <div style={{ fontSize:11, color:PALETTE.inkSoft, marginBottom:12 }}>Satu ruangan bisa diisi beberapa host di jam berbeda</div>
+
+                        {/* daftar yang sudah ada */}
+                        {assignments.length > 0 && (
+                          <div style={{ marginBottom:12 }}>
+                            <div style={{ fontSize:10, fontWeight:600, color:PALETTE.inkSoft, marginBottom:6, textTransform:"uppercase", letterSpacing:1 }}>Sudah terjadwal di ruangan ini:</div>
+                            {assignments.map((asn) => {
+                              const h = schedHosts.find((x) => x.id === asn.hostId);
+                              if (!h) return null;
+                              const jamLabel = h.sessions.map((dur, si) => {
+                                const st = asn.starts?.[si];
+                                return st != null ? `${String(st).padStart(2,"0")}:00–${String(st+dur).padStart(2,"00")}:00` : "—";
+                              }).join(", ");
                               return (
-                                <div key={si} style={{ background: PALETTE.panelAlt, borderRadius: 8, padding: 8, marginBottom: 6 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 4 }}>Sesi {si+1} · {dur}j</div>
-                                  <div style={{ display: "grid", gridTemplateColumns: "repeat(8,1fr)", gap: 3 }}>
-                                    {Array.from({ length: 25-dur }, (_, hr) => (
-                                      <button key={hr} onClick={() => setSchedSesiStarts((prev) => { const n=[...prev]; n[si]=hr; return n; })}
-                                        style={{ padding: "3px 1px", borderRadius: 4, border: `1px solid ${cur===hr?selHost.color:"#ddd"}`, fontSize: 9, cursor: "pointer", textAlign: "center", background: cur===hr?selHost.color:"#f8f8f6", color: cur===hr?"#fff":"#555" }}>
-                                        {String(hr).padStart(2,"0")}
-                                      </button>
-                                    ))}
+                                <div key={asn.id} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 10px", borderRadius:8, background:h.bg, border:`1px solid ${h.color}`, marginBottom:4 }}>
+                                  <span style={{ width:8, height:8, borderRadius:"50%", background:h.color, flexShrink:0 }} />
+                                  <div style={{ flex:1, minWidth:0 }}>
+                                    <div style={{ fontSize:11, fontWeight:700, color:h.color }}>{h.name}</div>
+                                    <div style={{ fontSize:9, color:PALETTE.inkSoft }}>{asn.toko||"—"} · {jamLabel}</div>
                                   </div>
-                                  {cur != null && <div style={{ fontSize: 9, color: selHost.color, marginTop: 3 }}>▸ {String(cur).padStart(2,"0")}:00–{String(cur+dur).padStart(2,"00")}:00</div>}
+                                  <button onClick={() => removeSchedAssignment(date, room, asn.id)}
+                                    style={{ fontSize:10, color:LIVE_ACCENT, background:"none", border:`1px solid ${LIVE_ACCENT}`, borderRadius:4, padding:"2px 8px", cursor:"pointer", flexShrink:0 }}>Hapus</button>
                                 </div>
                               );
                             })}
                           </div>
                         )}
-                        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                          <button onClick={async () => { await saveSchedSlot(date, room, null); setShowSchedSidebar(false); setSchedEditCtx(null); }}
-                            style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${LIVE_ACCENT}`, background: "#fff0f0", color: LIVE_ACCENT, fontSize: 12, cursor: "pointer" }}>Hapus</button>
-                          <button onClick={() => { setShowSchedSidebar(false); setSchedEditCtx(null); }}
-                            style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${PALETTE.line}`, background: PALETTE.panel, color: PALETTE.inkSoft, fontSize: 12, cursor: "pointer" }}>Batal</button>
-                          <button onClick={async () => {
-                            const hostId = schedEditCtx.hostId || entry?.hostId;
-                            const toko = document.getElementById("scedTokoSel")?.value;
-                            if (!hostId) { showToast("error", "Pilih host dulu."); return; }
-                            await saveSchedSlot(date, room, { hostId, toko: toko || "", starts: [...schedSesiStarts] });
-                            setShowSchedSidebar(false); setSchedEditCtx(null);
-                          }} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: "none", background: SCHED_ACCENT, color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 700 }}>Simpan</button>
+
+                        {/* form tambah host baru */}
+                        <div style={{ background:PALETTE.panelAlt, borderRadius:10, padding:12 }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:SCHED_ACCENT, marginBottom:8 }}>+ Tambah Host ke Ruangan Ini</div>
+                          <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:4 }}>Host</div>
+                          <select value={schedEditCtx.hostId||""} onChange={(e) => { setSchedEditCtx((c) => ({...c, hostId:e.target.value})); setSchedSesiStarts([]); }}
+                            style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:8 }}>
+                            <option value="">— Pilih host —</option>
+                            {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.sessions.join("+")} jam)</option>)}
+                          </select>
+                          {availableHosts.length===0 && <div style={{ fontSize:9, color:PALETTE.inkFaint, marginBottom:8 }}>Semua host sudah ada di ruangan ini atau sedang OFF.</div>}
+                          <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:2 }}>Toko</div>
+                          <div style={{ fontSize:8.5, color:PALETTE.inkFaint, marginBottom:4 }}>Toko baru? Tambah di Live Tracker → Kelola Toko Live-Only</div>
+                          <select id="scedTokoSel" style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:8 }}>
+                            <option value="">— Pilih toko —</option>
+                            {liveAccountOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                          </select>
+                          {selHost && (
+                            <div>
+                              <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:6 }}>Pilih jam mulai — {selHost.sessions.length} sesi ({selHost.sessions.join("+")} jam)</div>
+                              {selHost.sessions.map((dur, si) => {
+                                const cur = schedSesiStarts[si]??null;
+                                return (
+                                  <div key={si} style={{ background:"#fff", borderRadius:8, padding:8, marginBottom:6, border:`1px solid ${PALETTE.line}` }}>
+                                    <div style={{ fontSize:10, fontWeight:600, marginBottom:4, color:selHost.color }}>
+                                      Sesi {si+1} · {dur}j {cur!=null?`→ ${String(cur).padStart(2,"0")}:00–${String(cur+dur).padStart(2,"00")}:00`:""}
+                                    </div>
+                                    <div style={{ display:"grid", gridTemplateColumns:"repeat(8,1fr)", gap:3 }}>
+                                      {Array.from({length:25-dur},(_,hr)=>(
+                                        <button key={hr} onClick={()=>setSchedSesiStarts(prev=>{const n=[...prev];n[si]=hr;return n;})}
+                                          style={{ padding:"3px 1px", borderRadius:4, border:`1px solid ${cur===hr?selHost.color:"#ddd"}`, fontSize:9, cursor:"pointer", textAlign:"center", background:cur===hr?selHost.color:"#f8f8f6", color:cur===hr?"#fff":"#555" }}>
+                                          {String(hr).padStart(2,"0")}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div style={{ display:"flex", gap:8, marginTop:10 }}>
+                            <button onClick={()=>{setShowSchedSidebar(false);setSchedEditCtx(null);}}
+                              style={{ flex:1, padding:"7px 0", borderRadius:8, border:`1px solid ${PALETTE.line}`, background:PALETTE.panel, color:PALETTE.inkSoft, fontSize:12, cursor:"pointer" }}>Tutup</button>
+                            <button onClick={async()=>{
+                              const hostId=schedEditCtx.hostId;
+                              const toko=document.getElementById("scedTokoSel")?.value||"";
+                              if(!hostId){showToast("error","Pilih host dulu.");return;}
+                              await addSchedAssignment(date,room,{hostId,toko,starts:[...schedSesiStarts]});
+                              setSchedEditCtx(c=>({...c,hostId:""})); setSchedSesiStarts([]);
+                              showToast("success","Host ditambahkan ke ruangan.");
+                            }} style={{ flex:2, padding:"7px 0", borderRadius:8, border:"none", background:SCHED_ACCENT, color:"#fff", fontSize:12, cursor:"pointer", fontWeight:700 }}>
+                              + Tambah ke Ruangan
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
                   );
                 })()}
+
                 {/* legend */}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:8 }}>
                   {schedHosts.map((h) => (
-                    <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: PALETTE.inkSoft }}>
-                      <div style={{ width: 10, height: 10, borderRadius: 3, background: h.bg, border: `1px solid ${h.color}` }} />
-                      <span style={{ color: h.color, fontWeight: 600 }}>{h.name}</span>
+                    <div key={h.id} style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color:PALETTE.inkSoft }}>
+                      <div style={{ width:10, height:10, borderRadius:3, background:h.bg, border:`1px solid ${h.color}` }} />
+                      <span style={{ color:h.color, fontWeight:600 }}>{h.name}</span>
                       <span>({h.sessions.join("+")}j)</span>
                     </div>
                   ))}
                 </div>
               </Card>
+            )}
             )}
 
             {/* rekap mingguan */}
@@ -4025,7 +4063,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       <div className="text-[11px] mt-6 text-center" style={{ color: PALETTE.inkFaint }}>
         Login sebagai {isAdmin ? "Admin (akses penuh ke semua toko)" : "akun toko — kamu bisa lihat semua toko, tapi cuma bisa mengubah data tokomu sendiri"}. Tidak ada penghapusan otomatis; data hanya hilang lewat aksi manual eksplisit oleh Admin.
-      </div>
       </div>
     </div>
   );
