@@ -4065,5 +4065,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         Login sebagai {isAdmin ? "Admin (akses penuh ke semua toko)" : "akun toko — kamu bisa lihat semua toko, tapi cuma bisa mengubah data tokomu sendiri"}. Tidak ada penghapusan otomatis; data hanya hilang lewat aksi manual eksplisit oleh Admin.
       </div>
     </div>
+  </div>
   );
 }
