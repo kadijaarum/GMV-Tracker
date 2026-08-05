@@ -3534,11 +3534,21 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             date: d, dk,
             hosts: schedHosts.map((h) => {
               const isOff = dayOff.includes(h.id);
-              const slot = Object.values(daySlots).find((s) => s.hostId === h.id);
+              // Cari assignment host ini di semua room pada hari itu.
+              // Mendukung format lama (object {hostId,...}) dan baru (array [{hostId,...},...])
+              let foundSlot = null;
+              Object.values(daySlots).forEach((roomData) => {
+                if (foundSlot) return;
+                const assignments = Array.isArray(roomData)
+                  ? roomData
+                  : (roomData?.hostId ? [roomData] : []);
+                const match = assignments.find((asn) => asn.hostId === h.id);
+                if (match) foundSlot = match;
+              });
               if (isOff) return { host: h, status: "off", slot: null, compliance: null };
-              if (!slot) return { host: h, status: "unscheduled", slot: null, compliance: null };
-              const compliance = checkSchedCompliance(h.name, dk, slot.starts, h.sessions);
-              return { host: h, status: compliance?.status || "scheduled", slot, compliance };
+              if (!foundSlot) return { host: h, status: "unscheduled", slot: null, compliance: null };
+              const compliance = checkSchedCompliance(h.name, dk, foundSlot.starts, h.sessions);
+              return { host: h, status: compliance?.status || "scheduled", slot: foundSlot, compliance };
             }),
           };
         });
