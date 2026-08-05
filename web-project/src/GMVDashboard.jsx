@@ -3534,21 +3534,20 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             date: d, dk,
             hosts: schedHosts.map((h) => {
               const isOff = dayOff.includes(h.id);
-              // Cari assignment host ini di semua room pada hari itu.
-              // Mendukung format lama (object {hostId,...}) dan baru (array [{hostId,...},...])
-              let foundSlot = null;
+              // Kumpulkan SEMUA assignment host ini di semua room pada hari itu
+              // (satu host bisa live di room yang sama/berbeda di jam yang berbeda)
+              const allAssignments = [];
               Object.values(daySlots).forEach((roomData) => {
-                if (foundSlot) return;
-                const assignments = Array.isArray(roomData)
-                  ? roomData
-                  : (roomData?.hostId ? [roomData] : []);
-                const match = assignments.find((asn) => asn.hostId === h.id);
-                if (match) foundSlot = match;
+                const list = Array.isArray(roomData) ? roomData : (roomData?.hostId ? [roomData] : []);
+                list.filter((asn) => asn.hostId === h.id).forEach((asn) => allAssignments.push(asn));
               });
               if (isOff) return { host: h, status: "off", slot: null, compliance: null };
-              if (!foundSlot) return { host: h, status: "unscheduled", slot: null, compliance: null };
-              const compliance = checkSchedCompliance(h.name, dk, foundSlot.starts, h.sessions);
-              return { host: h, status: compliance?.status || "scheduled", slot: foundSlot, compliance };
+              if (!allAssignments.length) return { host: h, status: "unscheduled", slot: null, compliance: null };
+              // Gabungkan semua starts dari semua assignment, dengan session durations yang sesuai
+              const allStarts = allAssignments.flatMap((asn) => asn.starts || []);
+              const allDurations = allAssignments.flatMap(() => [...h.sessions]);
+              const compliance = checkSchedCompliance(h.name, dk, allStarts, allDurations);
+              return { host: h, status: compliance?.status || "scheduled", slot: allAssignments[0], compliance };
             }),
           };
         });
@@ -3599,15 +3598,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             {/* grid jadwal */}
             {!schedRecapView && (
               <Card>
-                <div className="overflow-x-auto" style={{ maxHeight: "75vh", overflowY: "auto" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(70px,1fr))`, minWidth: 900 }}>
-                    {/* corner */}
-                    <div style={{ gridRow:"1/3", padding:"4px 2px", fontSize:9, color:PALETTE.inkSoft, textAlign:"center", borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt }}>Jam</div>
-                    {/* day headers */}
+                <div style={{ maxHeight: "75vh", overflowY: "auto", overflowX: "auto", position: "relative" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `88px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(75px,1fr))`, minWidth: 980 }}>
+                    {/* corner — sticky kiri DAN atas */}
+                    <div style={{ gridRow:"1/3", padding:"4px 2px", fontSize:9, color:PALETTE.inkSoft, textAlign:"center", borderRight:`2px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt, position:"sticky", left:0, top:0, zIndex:40 }}>Jam</div>
+                    {/* day headers — sticky atas, border kiri tebal sebagai pemisah antar hari */}
                     {schedWeekDays.map((d, di) => {
                       const dk = ymd(d), isToday = dk === todayStr(), dayOff = wData.off?.[dk] || [];
                       return (
-                        <div key={di} style={{ gridColumn:`${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding:"4px 2px", fontSize:10, fontWeight:700, textAlign:"center", color:isToday?SCHED_ACCENT:PALETTE.ink, background:isToday?SCHED_SOFT:PALETTE.panelAlt, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}` }}>
+                        <div key={di} style={{ gridColumn:`${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding:"6px 4px", fontSize:11, fontWeight:700, textAlign:"center", color:isToday?SCHED_ACCENT:PALETTE.ink, background:isToday?SCHED_SOFT:PALETTE.panelAlt, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft:`2px solid ${isToday?SCHED_ACCENT:PALETTE.ink}`, position:"sticky", top:0, zIndex:30, height:44 }}>
                           <div>{SCHED_DAYS_SHORT[d.getDay()]} {d.getDate()}/{d.getMonth()+1}</div>
                           {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {dayOff.map(id=>schedHosts.find(h=>h.id===id)?.name||id).join(", ")}</div>}
                           {schedMode === "edit" && (
@@ -3623,10 +3622,10 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                         </div>
                       );
                     })}
-                    {/* room sub-headers */}
+                    {/* room sub-headers — sticky top:44px, border kiri tebal untuk kolom R1A tiap hari */}
                     {schedWeekDays.map((d, di) =>
                       SCHEDULE_ROOMS.map((room, ri) => (
-                        <div key={`rh-${di}-${ri}`} style={{ fontSize:8, padding:"2px 1px", textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, background:PALETTE.panelAlt }}>
+                        <div key={`rh-${di}-${ri}`} style={{ fontSize:9, padding:"3px 2px", textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft: ri===0 ? `2px solid ${PALETTE.line}` : "none", background:PALETTE.panelAlt, position:"sticky", top:44, zIndex:25, height:24, display:"flex", alignItems:"center", justifyContent:"center" }}>
                           {room.replace("Ruang ","R")}
                         </div>
                       ))
@@ -3634,7 +3633,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                     {/* hour rows — label jam pakai range 08:00-09:00 */}
                     {Array.from({ length: 24 }, (_, hr) => (
                       <React.Fragment key={hr}>
-                        <div style={{ fontSize:8, textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, padding:"2px 1px", display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt, whiteSpace:"nowrap" }}>
+                        <div style={{ fontSize:9, textAlign:"center", color:PALETTE.inkSoft, borderRight:`2px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, padding:"2px 3px", display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt, whiteSpace:"nowrap", position:"sticky", left:0, zIndex:15, fontWeight: hr >= 8 && hr <= 22 ? 500 : 400 }}>
                           {String(hr).padStart(2,"0")}:00–{String(hr+1).padStart(2,"00")}:00
                         </div>
                         {schedWeekDays.map((d, di) => {
@@ -3655,7 +3654,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                             }).filter(Boolean);
                             return (
                               <div key={`cell-${di}-${ri}-${hr}`}
-                                style={{ borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, minHeight:24, cursor:schedMode==="edit"?"pointer":"default", position:"relative" }}
+                                style={{ borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft: ri===0 ? `2px solid ${PALETTE.line}` : "none", minHeight:24, cursor:schedMode==="edit"?"pointer":"default", position:"relative" }}
                                 onClick={() => { if (schedMode!=="edit") return; setSchedEditCtx({date:d,room}); setSchedSesiStarts([]); setShowSchedSidebar(true); }}>
                                 {activeList.map(({ h, asn, isStart }, ai) => (
                                   <div key={asn.id||ai} style={{ background:h.bg, borderLeft:`2px solid ${h.color}`, padding:"1px 3px", fontSize:8, lineHeight:1.4, fontWeight:600, color:h.color, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
@@ -3682,8 +3681,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                   const rawEntry = wData.slots?.[dk]?.[room];
                   const assignments = Array.isArray(rawEntry) ? rawEntry : (rawEntry?.hostId ? [rawEntry] : []);
                   const selHost = schedHosts.find((h) => h.id === schedEditCtx.hostId);
-                  const usedHostIds = new Set(assignments.map((a) => a.hostId));
-                  const availableHosts = schedHosts.filter((h) => !dayOff.includes(h.id) && !usedHostIds.has(h.id));
+                  // Semua host yang tidak OFF bisa dipilih — boleh masuk ruangan yang sama
+                  // di jam berbeda dengan toko berbeda (multiple assignment per host per room)
+                  const availableHosts = schedHosts.filter((h) => !dayOff.includes(h.id));
                   return (
                     <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(28,21,35,0.45)" }}>
                       <div style={{ background:PALETTE.panel, border:`1px solid ${PALETTE.line}`, borderRadius:12, padding:20, width:"min(96vw,440px)", maxHeight:"90vh", overflowY:"auto" }}>
@@ -3725,7 +3725,10 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                             <option value="">— Pilih host —</option>
                             {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.name} ({h.sessions.join("+")} jam)</option>)}
                           </select>
-                          {availableHosts.length===0 && <div style={{ fontSize:9, color:PALETTE.inkFaint, marginBottom:8 }}>Semua host sudah ada di ruangan ini atau sedang OFF.</div>}
+                          {availableHosts.length===0 && <div style={{ fontSize:9, color:PALETTE.inkFaint, marginBottom:8 }}>Semua host sedang OFF hari ini.</div>}
+                          {availableHosts.length>0 && assignments.some(a=>a.hostId===schedEditCtx.hostId) && schedEditCtx.hostId && (
+                            <div style={{ fontSize:9, color:"#D97706", marginBottom:4 }}>⚠ Host ini sudah ada di ruangan ini — pastikan jam sesinya berbeda.</div>
+                          )}
                           <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:2 }}>Toko</div>
                           <div style={{ fontSize:8.5, color:PALETTE.inkFaint, marginBottom:4 }}>Toko baru? Tambah di Live Tracker → Kelola Toko Live-Only</div>
                           <select id="scedTokoSel" style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:8 }}>
