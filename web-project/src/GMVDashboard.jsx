@@ -213,7 +213,9 @@ const DEFAULT_LIVE_ONLY_ACCOUNTS = [
 
 // Konstanta fitur Jadwal Live
 const SCHEDULE_HOSTS_KEY = "gmv-dashboard-schedule-hosts-v1";
-const SCHEDULE_DATA_KEY  = "gmv-dashboard-schedule-data-v1"; // { [weekKey]: { slots, off } }
+const SCHEDULE_DATA_KEY  = "gmv-dashboard-schedule-data-v1"; // LEGACY — masih dibaca saat migrasi
+const SCHED_WEEK_KEY_PREFIX = "gmv-dashboard-sched-week-"; // Per-week storage: lebih aman, tidak saling timpa
+const getSchedWk = (wk) => `${SCHED_WEEK_KEY_PREFIX}${wk}`;
 const HOST_NAMES_KEY = "gmv-dashboard-host-names-v1"; // daftar nama host bersama Live Tracker + Jadwal
 const DEFAULT_HOST_NAMES = ["Ivonne","Fifi","Gita","Citra","Ana","Bella","Rena","Sherly","Winda"];
 const SCHEDULE_ROOMS = ["Ruang 1A", "Ruang 1B", "Ruang 2", "Ruang 3"];
@@ -914,7 +916,6 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         safeGet("gmv-dashboard-adbudgets-v1", {}),
         safeGet(LIVE_ONLY_ACCOUNTS_KEY, null),
         safeGet(SCHEDULE_HOSTS_KEY, []),
-        safeGet(SCHEDULE_DATA_KEY, {}),
         safeGet(HOST_NAMES_KEY, null),
       ]);
       const finalCfg = cfg || { accounts: DEFAULT_ACCOUNTS, benchmarks: { targetROAS: 0, targetCR: 0 } };
@@ -931,7 +932,19 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       if (!savedLiveOnlyAccounts && ok) await safeSet(LIVE_ONLY_ACCOUNTS_KEY, finalLiveOnly);
 
       setSchedHosts(savedSchedHosts || []);
-      setSchedData(savedSchedData || {});
+      // Muat jadwal: tiap minggu disimpan secara terpisah (per-week key) agar tidak saling timpa.
+      // Saat mount, kita muat beberapa minggu terdekat sekaligus (minggu ini ± 2 minggu)
+      // supaya navigasi antar minggu terasa instan tanpa perlu fetch ulang dari Firestore.
+      const now = new Date();
+      const weekKeys = [-2,-1,0,1,2].map(offset => {
+        const d = new Date(now); d.setDate(d.getDate() + offset*7);
+        return weekKey(getMonday(d));
+      });
+      const weekDataResults = await Promise.all(weekKeys.map(wk => safeGet(getSchedWk(wk), null)));
+      const initialSchedData = {};
+      weekKeys.forEach((wk, i) => { if (weekDataResults[i]) initialSchedData[wk] = weekDataResults[i]; });
+      setSchedData(initialSchedData);
+
       const finalHostNames = savedHostNames || DEFAULT_HOST_NAMES;
       setHostNames(finalHostNames);
       if (!savedHostNames && ok) await safeSet(HOST_NAMES_KEY, finalHostNames);
@@ -963,6 +976,21 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   }, [selectedMonth, targets, adBudgets]);
   useEffect(() => { setDraft(entries[inputDate] ? { ...entries[inputDate] } : {}); }, [inputDate, entries]);
   useEffect(() => { setLiveFilterHost("all"); }, [liveFilterAccount, liveFilterMonth, liveFilterMode, liveFilterStart, liveFilterEnd]);
+
+  // Muat data jadwal dari Firestore saat navigasi ke minggu yang belum ada di state.
+  // Per-week key: setiap minggu disimpan terpisah → tidak ada risiko saling timpa antar minggu.
+  useEffect(() => {
+    const wk = weekKey(schedWeekStart);
+    if (schedData[wk] !== undefined) return; // sudah ada, skip fetch
+    (async () => {
+      try {
+        const data = await safeGet(getSchedWk(wk), null);
+        setSchedData(prev => ({ ...prev, [wk]: data || { slots: {}, off: {} } }));
+      } catch (e) {
+        console.error("Gagal muat jadwal minggu:", wk, e);
+      }
+    })();
+  }, [schedWeekStart]); // eslint-disable-line
 
   const persist = useCallback(async (key, value, setter) => {
     setSaving(true);
@@ -1741,7 +1769,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     arr.push({ ...assignment, id: `${Date.now()}-${Math.random().toString(36).slice(2,6)}` });
     next[wk].slots[dk][room] = arr;
     setSchedData(next);
-    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    try { await safeSet(getSchedWk(wk), next[wk]); }
     catch (e) { showToast("error", `Gagal simpan jadwal: ${e.message}`); }
   };
 
@@ -1752,20 +1780,27 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     if (!Array.isArray(arr)) return;
     next[wk].slots[dk][room] = arr.filter((a) => a.id !== assignmentId);
     setSchedData(next);
-    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    try { await safeSet(getSchedWk(wk), next[wk]); }
     catch (e) { showToast("error", `Gagal hapus: ${e.message}`); }
   };
 
   const toggleSchedOff = async (date, hostId) => {
     const dk = ymd(date), wk = weekKey(date);
+    // Simpan nama host (bukan ID) agar display bersih dan tidak bergantung pada ID yang bisa berubah
+    const h = schedHosts.find((x) => x.id === hostId);
+    const offEntry = h ? h.name : hostId;
     const next = JSON.parse(JSON.stringify(schedData));
     if (!next[wk]) next[wk] = { slots: {}, off: {} };
     if (!next[wk].off[dk]) next[wk].off[dk] = [];
     const arr = next[wk].off[dk];
-    const idx = arr.indexOf(hostId);
-    if (idx >= 0) arr.splice(idx, 1); else arr.push(hostId);
+    // Cek dengan nama ATAU ID lama (backward compat) sebelum toggle
+    const idxByName = arr.indexOf(offEntry);
+    const idxById = arr.indexOf(hostId);
+    const existingIdx = idxByName >= 0 ? idxByName : idxById;
+    if (existingIdx >= 0) arr.splice(existingIdx, 1);
+    else arr.push(offEntry);
     setSchedData(next);
-    try { await safeSet(SCHEDULE_DATA_KEY, next); }
+    try { await safeSet(getSchedWk(wk), next[wk]); }
     catch (e) { showToast("error", `Gagal simpan off: ${e.message}`); }
   };
 
@@ -3533,7 +3568,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
           return {
             date: d, dk,
             hosts: schedHosts.map((h) => {
-              const isOff = dayOff.includes(h.id);
+              const isOff = dayOff.includes(h.name) || dayOff.includes(h.id); // support format lama (ID) & baru (nama)
               // Kumpulkan SEMUA assignment host ini di semua room pada hari itu
               // (satu host bisa live di room yang sama/berbeda di jam yang berbeda)
               const allAssignments = [];
@@ -3608,12 +3643,20 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                       return (
                         <div key={di} style={{ gridColumn:`${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding:"6px 4px", fontSize:11, fontWeight:700, textAlign:"center", color:isToday?SCHED_ACCENT:PALETTE.ink, background:isToday?SCHED_SOFT:PALETTE.panelAlt, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft:`2px solid ${isToday?SCHED_ACCENT:PALETTE.ink}`, position:"sticky", top:0, zIndex:30, height:44 }}>
                           <div>{SCHED_DAYS_SHORT[d.getDay()]} {d.getDate()}/{d.getMonth()+1}</div>
-                          {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {dayOff.map(id=>schedHosts.find(h=>h.id===id)?.name||id).join(", ")}</div>}
+                          {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {dayOff.map(entry => {
+                            // entry bisa berupa nama langsung (format baru) atau hostId lama (format lama)
+                            const byName = schedHosts.find(h => h.name === entry);
+                            const byId   = schedHosts.find(h => h.id   === entry);
+                            if (byName || byId) return (byName || byId).name;
+                            // fallback: ekstrak nama dari pola ID lama "host_gita_..." → "Gita"
+                            const m = entry.match(/^host_([a-z]+)_/i);
+                            return m ? m[1].charAt(0).toUpperCase()+m[1].slice(1) : entry;
+                          }).join(", ")}</div>}
                           {schedMode === "edit" && (
                             <div style={{ marginTop:2, display:"flex", flexWrap:"wrap", justifyContent:"center", gap:2 }}>
                               {schedHosts.map((h) => (
                                 <button key={h.id} onClick={() => toggleSchedOff(d, h.id)}
-                                  style={{ fontSize:7, padding:"1px 4px", borderRadius:3, border:`1px solid ${dayOff.includes(h.id)?LIVE_ACCENT:"#ddd"}`, background:dayOff.includes(h.id)?"#FFE4E9":"#fff", color:dayOff.includes(h.id)?LIVE_ACCENT:PALETTE.inkSoft, cursor:"pointer" }}>
+                                  style={{ fontSize:7, padding:"1px 4px", borderRadius:3, border:`1px solid ${(dayOff.includes(h.name)||dayOff.includes(h.id))?LIVE_ACCENT:"#ddd"}`, background:(dayOff.includes(h.name)||dayOff.includes(h.id))?"#FFE4E9":"#fff", color:(dayOff.includes(h.name)||dayOff.includes(h.id))?LIVE_ACCENT:PALETTE.inkSoft, cursor:"pointer" }}>
                                   {h.name}
                                 </button>
                               ))}
@@ -3643,7 +3686,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                             const assignments = Array.isArray(rawEntry) ? rawEntry : (rawEntry?.hostId ? [rawEntry] : []);
                             const activeList = assignments.map((asn) => {
                               const h = schedHosts.find((x) => x.id === asn.hostId);
-                              if (!h || dayOff.includes(h.id) || !asn.starts) return null;
+                              if (!h || dayOff.includes(h.name) || dayOff.includes(h.id) || !asn.starts) return null;
                               let active = false, isStart = false;
                               h.sessions.forEach((dur, si) => {
                                 const st = asn.starts[si];
@@ -3683,7 +3726,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                   const selHost = schedHosts.find((h) => h.id === schedEditCtx.hostId);
                   // Semua host yang tidak OFF bisa dipilih — boleh masuk ruangan yang sama
                   // di jam berbeda dengan toko berbeda (multiple assignment per host per room)
-                  const availableHosts = schedHosts.filter((h) => !dayOff.includes(h.id));
+                  const availableHosts = schedHosts.filter((h) => !dayOff.includes(h.name) && !dayOff.includes(h.id));
                   return (
                     <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(28,21,35,0.45)" }}>
                       <div style={{ background:PALETTE.panel, border:`1px solid ${PALETTE.line}`, borderRadius:12, padding:20, width:"min(96vw,440px)", maxHeight:"90vh", overflowY:"auto" }}>
