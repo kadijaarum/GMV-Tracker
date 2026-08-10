@@ -940,10 +940,44 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
         const d = new Date(now); d.setDate(d.getDate() + offset*7);
         return weekKey(getMonday(d));
       });
-      const weekDataResults = await Promise.all(weekKeys.map(wk => safeGet(getSchedWk(wk), null)));
+
+      // MIGRASI: baca data lama dari key tunggal (sebelum perubahan ke per-week key)
+      // lalu gabungkan dengan data per-week yang sudah ada
+      const [legacyData, ...weekDataResults] = await Promise.all([
+        safeGet(SCHEDULE_DATA_KEY, null),
+        ...weekKeys.map(wk => safeGet(getSchedWk(wk), null)),
+      ]);
+
       const initialSchedData = {};
-      weekKeys.forEach((wk, i) => { if (weekDataResults[i]) initialSchedData[wk] = weekDataResults[i]; });
+
+      // 1. Masukkan data lama dulu (sebagai base)
+      if (legacyData && typeof legacyData === 'object') {
+        Object.entries(legacyData).forEach(([wk, data]) => {
+          if (data && typeof data === 'object') initialSchedData[wk] = data;
+        });
+      }
+
+      // 2. Override/merge dengan data per-week yang lebih baru (per-week lebih prioritas)
+      weekKeys.forEach((wk, i) => {
+        if (weekDataResults[i]) initialSchedData[wk] = weekDataResults[i];
+      });
+
       setSchedData(initialSchedData);
+
+      // 3. Kalau ada data lama, migrasikan ke per-week keys dan hapus key lama
+      if (legacyData && typeof legacyData === 'object' && Object.keys(legacyData).length > 0 && ok) {
+        try {
+          await Promise.all(
+            Object.entries(legacyData)
+              .filter(([wk, data]) => data && typeof data === 'object')
+              .map(([wk, data]) => safeSet(getSchedWk(wk), data))
+          );
+          // Tandai key lama sebagai sudah dimigrasikan (isi dengan marker, bukan hapus)
+          await safeSet(SCHEDULE_DATA_KEY, { _migrated: true, _ts: Date.now() });
+        } catch (e) {
+          console.warn("Migrasi jadwal gagal (data tetap aman di key lama):", e);
+        }
+      }
 
       const finalHostNames = savedHostNames || DEFAULT_HOST_NAMES;
       setHostNames(finalHostNames);
