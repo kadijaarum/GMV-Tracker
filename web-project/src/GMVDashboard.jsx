@@ -883,6 +883,8 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [schedMode, setSchedMode] = useState("view"); // "view"|"edit"
   const [schedEditCtx, setSchedEditCtx] = useState(null); // {date,room}
   const [schedSesiStarts, setSchedSesiStarts] = useState([]);
+  const [schedEditingAsnId, setSchedEditingAsnId] = useState(null); // id assignment yang sedang diedit
+  const [schedEditingStarts, setSchedEditingStarts] = useState([]); // starts sementara untuk edit
   const [schedNewName, setSchedNewName] = useState("");
   const [schedNewSessions, setSchedNewSessions] = useState("2,2");
   const [schedNewColor, setSchedNewColor] = useState("#1D9E75");
@@ -1829,6 +1831,24 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     setSchedData(next);
     try { await safeSet(getSchedWk(wk), next[wk]); }
     catch (e) { showToast("error", `Gagal hapus: ${e.message}`); }
+  };
+
+  const editSchedAssignment = async (date, room, assignmentId, updatedData) => {
+    const dk = ymd(date), wk = weekKey(date);
+    const next = JSON.parse(JSON.stringify(schedData));
+    const arr = next[wk]?.slots?.[dk]?.[room];
+    if (!Array.isArray(arr)) return;
+    const idx = arr.findIndex((a) => a.id === assignmentId);
+    if (idx < 0) return;
+    arr[idx] = { ...arr[idx], ...updatedData };
+    next[wk].slots[dk][room] = arr;
+    setSchedData(next);
+    setSchedEditingAsnId(null);
+    setSchedEditingStarts([]);
+    try {
+      await safeSet(getSchedWk(wk), next[wk]);
+      showToast("success", "Jadwal diperbarui.");
+    } catch (e) { showToast("error", `Gagal simpan: ${e.message}`); }
   };
 
   const toggleSchedOff = async (date, hostId) => {
@@ -3792,15 +3812,72 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                                 const st = asn.starts?.[si];
                                 return st != null ? `${String(st).padStart(2,"0")}:00–${String(st+dur).padStart(2,"00")}:00` : "—";
                               }).join(", ");
+                              const isEditing = schedEditingAsnId === asn.id;
                               return (
-                                <div key={asn.id} style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 10px", borderRadius:8, background:h.bg, border:`1px solid ${h.color}`, marginBottom:4 }}>
-                                  <span style={{ width:8, height:8, borderRadius:"50%", background:h.color, flexShrink:0 }} />
-                                  <div style={{ flex:1, minWidth:0 }}>
-                                    <div style={{ fontSize:11, fontWeight:700, color:h.color }}>{h.name}</div>
-                                    <div style={{ fontSize:9, color:PALETTE.inkSoft }}>{asn.toko||"—"} · {jamLabel}</div>
+                                <div key={asn.id} style={{ borderRadius:8, border:`1px solid ${isEditing ? h.color : h.color+"55"}`, marginBottom:8, overflow:"hidden" }}>
+                                  {/* Header assignment */}
+                                  <div style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 10px", background:h.bg }}>
+                                    <span style={{ width:8, height:8, borderRadius:"50%", background:h.color, flexShrink:0 }} />
+                                    <div style={{ flex:1, minWidth:0 }}>
+                                      <div style={{ fontSize:11, fontWeight:700, color:h.color }}>{h.name}</div>
+                                      <div style={{ fontSize:9, color:PALETTE.inkSoft }}>{asn.toko||"—"} · {jamLabel}</div>
+                                    </div>
+                                    <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                                      <button onClick={() => {
+                                        if (isEditing) { setSchedEditingAsnId(null); setSchedEditingStarts([]); }
+                                        else { setSchedEditingAsnId(asn.id); setSchedEditingStarts(asn.starts ? [...asn.starts] : []); }
+                                      }} style={{ fontSize:10, color:isEditing?"#fff":h.color, background:isEditing?h.color:"none", border:`1px solid ${h.color}`, borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>
+                                        {isEditing ? "Batal" : "Edit"}
+                                      </button>
+                                      <button onClick={() => { if (window.confirm(`Hapus jadwal ${h.name} (${jamLabel})?`)) removeSchedAssignment(date, room, asn.id); }}
+                                        style={{ fontSize:10, color:LIVE_ACCENT, background:"none", border:`1px solid ${LIVE_ACCENT}`, borderRadius:4, padding:"2px 8px", cursor:"pointer" }}>Hapus</button>
+                                    </div>
                                   </div>
-                                  <button onClick={() => removeSchedAssignment(date, room, asn.id)}
-                                    style={{ fontSize:10, color:LIVE_ACCENT, background:"none", border:`1px solid ${LIVE_ACCENT}`, borderRadius:4, padding:"2px 8px", cursor:"pointer", flexShrink:0 }}>Hapus</button>
+
+                                  {/* Inline edit form */}
+                                  {isEditing && (
+                                    <div style={{ padding:"10px 12px", background:"#fafafa", borderTop:`1px solid ${h.color}33` }}>
+                                      <div style={{ fontSize:10, fontWeight:600, color:h.color, marginBottom:8 }}>Edit jadwal {h.name}</div>
+
+                                      {/* Toko */}
+                                      <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:3 }}>Toko</div>
+                                      <select id={`editToko-${asn.id}`} defaultValue={asn.toko||""}
+                                        style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:10 }}>
+                                        <option value="">— Pilih toko —</option>
+                                        {liveAccountOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                                      </select>
+
+                                      {/* Jam sesi */}
+                                      <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:6 }}>
+                                        Jam mulai tiap sesi — {h.sessions.length} sesi ({h.sessions.join("+")} jam)
+                                      </div>
+                                      {h.sessions.map((dur, si) => {
+                                        const cur = schedEditingStarts[si] ?? null;
+                                        return (
+                                          <div key={si} style={{ background:"#fff", borderRadius:8, padding:8, marginBottom:6, border:`1px solid ${PALETTE.line}` }}>
+                                            <div style={{ fontSize:10, fontWeight:600, marginBottom:4, color:h.color }}>
+                                              Sesi {si+1} · {dur}j {cur!=null?`→ ${String(cur).padStart(2,"0")}:00–${String(cur+dur).padStart(2,"00")}:00`:""}
+                                            </div>
+                                            <div style={{ display:"grid", gridTemplateColumns:"repeat(8,1fr)", gap:3 }}>
+                                              {Array.from({length:25-dur},(_,hr)=>(
+                                                <button key={hr} onClick={()=>setSchedEditingStarts(prev=>{const n=[...prev];n[si]=hr;return n;})}
+                                                  style={{ padding:"3px 1px", borderRadius:4, border:`1px solid ${cur===hr?h.color:"#ddd"}`, fontSize:9, cursor:"pointer", textAlign:"center", background:cur===hr?h.color:"#f8f8f6", color:cur===hr?"#fff":"#555" }}>
+                                                  {String(hr).padStart(2,"0")}
+                                                </button>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+
+                                      <button onClick={async () => {
+                                        const newToko = document.getElementById(`editToko-${asn.id}`)?.value || asn.toko || "";
+                                        await editSchedAssignment(date, room, asn.id, { toko: newToko, starts: [...schedEditingStarts] });
+                                      }} style={{ width:"100%", padding:"7px 0", borderRadius:8, border:"none", background:h.color, color:"#fff", fontSize:12, cursor:"pointer", fontWeight:700, marginTop:4 }}>
+                                        Simpan Perubahan
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
