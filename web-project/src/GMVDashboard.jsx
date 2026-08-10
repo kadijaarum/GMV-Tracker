@@ -950,10 +950,23 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
       const initialSchedData = {};
 
-      // 1. Masukkan data lama dulu (sebagai base)
-      if (legacyData && typeof legacyData === 'object') {
+      // 1. Masukkan data lama dulu (sebagai base), sambil bersihkan format off yang lama
+      if (legacyData && typeof legacyData === 'object' && !legacyData._migrated) {
         Object.entries(legacyData).forEach(([wk, data]) => {
-          if (data && typeof data === 'object') initialSchedData[wk] = data;
+          if (!data || typeof data !== 'object') return;
+          // Normalisasi off arrays: konversi ID lama ke nama, hapus duplikat
+          const cleanedOff = {};
+          if (data.off) {
+            Object.entries(data.off).forEach(([dk, entries]) => {
+              if (!Array.isArray(entries)) return;
+              const resolvedNames = [...new Set(entries.map(e => {
+                const m = e.match(/^host_([a-z]+)_/i);
+                return m ? m[1].charAt(0).toUpperCase()+m[1].slice(1) : e;
+              }))];
+              cleanedOff[dk] = resolvedNames;
+            });
+          }
+          initialSchedData[wk] = { ...data, off: cleanedOff };
         });
       }
 
@@ -1820,19 +1833,22 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   const toggleSchedOff = async (date, hostId) => {
     const dk = ymd(date), wk = weekKey(date);
-    // Simpan nama host (bukan ID) agar display bersih dan tidak bergantung pada ID yang bisa berubah
     const h = schedHosts.find((x) => x.id === hostId);
-    const offEntry = h ? h.name : hostId;
+    const hostName = h ? h.name : null;
     const next = JSON.parse(JSON.stringify(schedData));
     if (!next[wk]) next[wk] = { slots: {}, off: {} };
     if (!next[wk].off[dk]) next[wk].off[dk] = [];
-    const arr = next[wk].off[dk];
-    // Cek dengan nama ATAU ID lama (backward compat) sebelum toggle
-    const idxByName = arr.indexOf(offEntry);
-    const idxById = arr.indexOf(hostId);
-    const existingIdx = idxByName >= 0 ? idxByName : idxById;
-    if (existingIdx >= 0) arr.splice(existingIdx, 1);
-    else arr.push(offEntry);
+    let arr = next[wk].off[dk];
+
+    // Normalisasi: hapus SEMUA entri yang merujuk host ini (baik format ID lama maupun nama baru)
+    // agar tidak ada duplikat setelah toggle
+    const alreadyOff = arr.some(e => e === hostId || (hostName && e === hostName));
+    arr = arr.filter(e => e !== hostId && !(hostName && e === hostName));
+
+    // Kalau belum OFF → tambahkan dengan format nama (bersih, tidak pakai ID)
+    if (!alreadyOff) arr.push(hostName || hostId);
+
+    next[wk].off[dk] = arr;
     setSchedData(next);
     try { await safeSet(getSchedWk(wk), next[wk]); }
     catch (e) { showToast("error", `Gagal simpan off: ${e.message}`); }
@@ -3677,15 +3693,13 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                       return (
                         <div key={di} style={{ gridColumn:`${2+di*SCHEDULE_ROOMS.length}/${2+di*SCHEDULE_ROOMS.length+SCHEDULE_ROOMS.length}`, padding:"6px 4px", fontSize:11, fontWeight:700, textAlign:"center", color:isToday?SCHED_ACCENT:PALETTE.ink, background:isToday?SCHED_SOFT:PALETTE.panelAlt, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft:`2px solid ${isToday?SCHED_ACCENT:PALETTE.ink}`, position:"sticky", top:0, zIndex:30, height:44 }}>
                           <div>{SCHED_DAYS_SHORT[d.getDay()]} {d.getDate()}/{d.getMonth()+1}</div>
-                          {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {dayOff.map(entry => {
-                            // entry bisa berupa nama langsung (format baru) atau hostId lama (format lama)
+                          {dayOff.length > 0 && <div style={{ fontSize:8, color:LIVE_ACCENT }}>OFF: {[...new Set(dayOff.map(entry => {
                             const byName = schedHosts.find(h => h.name === entry);
                             const byId   = schedHosts.find(h => h.id   === entry);
                             if (byName || byId) return (byName || byId).name;
-                            // fallback: ekstrak nama dari pola ID lama "host_gita_..." → "Gita"
                             const m = entry.match(/^host_([a-z]+)_/i);
                             return m ? m[1].charAt(0).toUpperCase()+m[1].slice(1) : entry;
-                          }).join(", ")}</div>}
+                          }))].join(", ")}</div>}
                           {schedMode === "edit" && (
                             <div style={{ marginTop:2, display:"flex", flexWrap:"wrap", justifyContent:"center", gap:2 }}>
                               {schedHosts.map((h) => (
