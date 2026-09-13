@@ -2,7 +2,7 @@ import {
   getFirestore, doc, getDoc, setDoc, deleteDoc,
   collection, query, where, getDocs, documentId, orderBy,
 } from "firebase/firestore";
-import { app } from "./firebaseConfig.js";
+import { firebaseConfig, app } from "./firebaseConfig.js";
 
 export const db = getFirestore(app);
 
@@ -161,6 +161,59 @@ export async function deleteLiveSession(accountId, sessionId) {
   await deleteDoc(ref);
 }
 
+
+/* ============================================================
+   USER MANAGEMENT — userMappings/{username}
+   Admin membuat user baru lewat UI. Mapping username → email + config
+   disimpan di Firestore. Firebase Auth user dibuat via REST API
+   (tidak sign out current admin session).
+   ============================================================ */
+
+import { firebaseConfig } from "./firebaseConfig.js";
+
+export async function createFirebaseAuthUser(email, password) {
+  // REST API: membuat Firebase Auth user TANPA mengubah sesi login yang sedang aktif.
+  // Admin tetap login sebagai dirinya sendiri setelah memanggil ini.
+  const resp = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: false }),
+    }
+  );
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.message || "Gagal membuat user Firebase");
+  return data.localId; // UID user baru
+}
+
+export async function fetchUserMappings() {
+  const col = collection(db, "userMappings");
+  const snap = await getDocs(col);
+  return snap.docs.map((d) => ({ username: d.id, ...d.data() }));
+}
+
+export async function fetchUserMapping(username) {
+  const ref = doc(db, "userMappings", username);
+  const snap = await getDoc(ref);
+  return snap.exists() ? { username, ...snap.data() } : null;
+}
+
+export async function saveUserMapping(username, data) {
+  const ref = doc(db, "userMappings", username);
+  await setDoc(ref, sanitize(data));
+}
+
+export async function deleteUserMapping(username) {
+  const ref = doc(db, "userMappings", username);
+  await deleteDoc(ref);
+}
+
+export async function deleteFirebaseUserMapping(uid) {
+  // Hapus userRoles saja (Auth user tidak bisa dihapus client-side tanpa Admin SDK)
+  const ref = doc(db, "userRoles", uid);
+  await deleteDoc(ref);
+}
 /* ============================================================
    ROLE — userRoles/{uid} → { accountId: "tt1" | ... | "admin" }
    Dokumen ini dibuat MANUAL oleh admin lewat Firestore Console

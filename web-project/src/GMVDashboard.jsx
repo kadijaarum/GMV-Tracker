@@ -10,7 +10,7 @@ import {
   Radio, Eye, Clock,
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord, fetchAllLiveSessions, saveLiveSession, deleteLiveSession } from "./storageAdapter.js";
+import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord, fetchAllLiveSessions, saveLiveSession, deleteLiveSession, createFirebaseAuthUser, fetchUserMappings, saveUserMapping, deleteUserMapping } from "./storageAdapter.js";
 
 /* ============================================================
    TOKENS — palet & tipografi
@@ -889,7 +889,16 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
   const [schedNewSessions, setSchedNewSessions] = useState("2,2");
   const [schedNewColor, setSchedNewColor] = useState("#1D9E75");
   const [showSchedSidebar, setShowSchedSidebar] = useState(false);
-  const [schedRecapView, setSchedRecapView] = useState(false); // toggle rekap minggu
+  const [schedRecapView, setSchedRecapView] = useState(false);
+  const [schedSidebarShowAddToko, setSchedSidebarShowAddToko] = useState(false);
+  const [schedSidebarNewToko, setSchedSidebarNewToko] = useState("");
+  const [schedSidebarNewTokoPlatform, setSchedSidebarNewTokoPlatform] = useState("shopee");
+
+  // User management state (admin only)
+  const [dynUsers, setDynUsers] = useState([]); // dynamic users dari Firestore userMappings
+  const [newUserForm, setNewUserForm] = useState({ username:"", email:"", password:"", accountId:"tt1", label:"" });
+  const [userMgmtLoading, setUserMgmtLoading] = useState(false);
+  const [userMgmtLoaded, setUserMgmtLoaded] = useState(false);
   const [liveSavedFlash, setLiveSavedFlash] = useState(false);
 
   const [hiddenAccounts, setHiddenAccounts] = useState(new Set());
@@ -1743,14 +1752,14 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     }
   };
 
-  const addLiveOnlyAccount = async () => {
+  const addLiveOnlyAccount = async (overrideName, overridePlatform) => {
     if (!isAdmin) return;
-    const trimmedName = newLiveAccountName.trim();
+    const trimmedName = (overrideName ?? newLiveAccountName).trim();
+    const platform = overridePlatform ?? newLiveAccountPlatform;
     if (!trimmedName) { showToast("error", "Nama toko wajib diisi."); return; }
     const combined = [...accounts, ...liveOnlyAccounts];
     if (combined.some((a) => a.name.toLowerCase() === trimmedName.toLowerCase())) {
-      showToast("error", `"${trimmedName}" sudah ada di daftar toko.`);
-      return;
+      showToast("error", `"${trimmedName}" sudah ada di daftar toko.`); return;
     }
     const baseSlug = trimmedName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
     let newId = `live_${baseSlug}`;
@@ -1759,15 +1768,15 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     while (existingIds.has(newId)) { newId = `live_${baseSlug}_${suffix}`; suffix++; }
     const usedColors = new Set(combined.map((a) => a.color));
     const color = ACCOUNT_COLORS.find((c) => !usedColors.has(c)) || ACCOUNT_COLORS[combined.length % ACCOUNT_COLORS.length];
-    const newAccount = { id: newId, name: trimmedName, platform: newLiveAccountPlatform, color };
+    const newAccount = { id: newId, name: trimmedName, platform, color };
     setSaving(true);
     try {
       const next = [...liveOnlyAccounts, newAccount];
       await safeSet(LIVE_ONLY_ACCOUNTS_KEY, next);
       setLiveOnlyAccounts(next);
-      setNewLiveAccountName("");
+      if (!overrideName) setNewLiveAccountName("");
       setSaving(false);
-      showToast("success", `"${trimmedName}" ditambahkan ke daftar toko Live Tracker.`);
+      showToast("success", `"${trimmedName}" ditambahkan ke daftar toko.`);
     } catch (e) {
       setSaving(false);
       showToast("error", `Gagal menambah toko: ${e.message || "cek koneksi"}.`);
@@ -2027,6 +2036,63 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
     return { status: overallStatus, sessions: sessionResults, totalActualGmv, totalSchedHours, totalActualHours, detail };
   }, [liveSessions]);
+
+  /* ---------- handlers: User Management (admin only) ---------- */
+  const loadDynUsers = async () => {
+    if (userMgmtLoaded) return;
+    setUserMgmtLoading(true);
+    try {
+      const users = await fetchUserMappings();
+      setDynUsers(users);
+      setUserMgmtLoaded(true);
+    } catch (e) { showToast("error", `Gagal muat data pengguna: ${e.message}`); }
+    setUserMgmtLoading(false);
+  };
+
+  const createDynUser = async () => {
+    if (!isAdmin) return;
+    const { username, email, password, accountId, label } = newUserForm;
+    if (!username.trim() || !email.trim() || !password.trim()) {
+      showToast("error", "Username, email, dan password wajib diisi."); return;
+    }
+    if (password.length < 6) { showToast("error", "Password minimal 6 karakter."); return; }
+    if (dynUsers.some(u => u.username === username.trim().toLowerCase())) {
+      showToast("error", `Username "${username}" sudah dipakai.`); return;
+    }
+    setSaving(true);
+    try {
+      // 1. Buat Firebase Auth user (tidak sign out admin)
+      const uid = await createFirebaseAuthUser(email.trim(), password);
+      // 2. Set userRoles di Firestore
+      await window.storage.set(`userRole_${uid}`, null); // placeholder, pakai set ke userRoles langsung
+      // Simpan userRoles via setDoc (admin bisa menulis karena rules)
+      const { db } = await import("./storageAdapter.js");
+      const { doc, setDoc } = await import("firebase/firestore");
+      await setDoc(doc(db, "userRoles", uid), { accountId: accountId || "tt1" });
+      // 3. Simpan mapping username di Firestore
+      const mapping = { email: email.trim(), label: label.trim() || username.trim(), accountId: accountId || "tt1", uid, createdAt: Date.now() };
+      await saveUserMapping(username.trim().toLowerCase(), mapping);
+      setDynUsers(prev => [...prev, { username: username.trim().toLowerCase(), ...mapping }]);
+      setNewUserForm({ username:"", email:"", password:"", accountId:"tt1", label:"" });
+      setSaving(false);
+      showToast("success", `Pengguna "${username}" berhasil dibuat!`);
+    } catch (e) {
+      setSaving(false);
+      showToast("error", `Gagal buat pengguna: ${e.message}`);
+    }
+  };
+
+  const deleteDynUser = async (username) => {
+    if (!isAdmin) return;
+    if (!window.confirm(`Hapus pengguna "${username}"? Akun Firebase Auth-nya tidak otomatis terhapus, tapi login lewat username ini tidak akan bisa lagi.`)) return;
+    setSaving(true);
+    try {
+      await deleteUserMapping(username);
+      setDynUsers(prev => prev.filter(u => u.username !== username));
+      setSaving(false);
+      showToast("success", `Pengguna "${username}" dihapus dari daftar.`);
+    } catch (e) { setSaving(false); showToast("error", `Gagal hapus: ${e.message}`); }
+  };
 
   const saveAccountsAndBenchmarks = async () => {
     if (!isAdmin) return;
@@ -3768,8 +3834,17 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                                 style={{ borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft: ri===0 ? `2px solid ${PALETTE.line}` : "none", minHeight:24, cursor:schedMode==="edit"?"pointer":"default", position:"relative" }}
                                 onClick={() => { if (schedMode!=="edit") return; setSchedEditCtx({date:d,room}); setSchedSesiStarts([]); setShowSchedSidebar(true); }}>
                                 {activeList.map(({ h, asn, isStart }, ai) => (
-                                  <div key={asn.id||ai} style={{ background:h.bg, borderLeft:`2px solid ${h.color}`, padding:"1px 3px", fontSize:8, lineHeight:1.4, fontWeight:600, color:h.color, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                                    {isStart ? `${h.name}${asn.toko ? ` · ${asn.toko}` : ""}` : h.name}
+                                  <div key={asn.id||ai} style={{ background:h.bg, borderLeft:`2px solid ${h.color}`, padding:"1px 3px", fontSize:8, lineHeight:1.4, fontWeight:600, color:h.color, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", position:"relative", display:"flex", alignItems:"center", gap:2 }}>
+                                    <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis" }}>
+                                      {isStart ? `${h.name}${asn.toko ? ` · ${asn.toko}` : ""}` : h.name}
+                                    </span>
+                                    {schedMode==="edit" && asn.id && (
+                                      <button onClick={(e) => { e.stopPropagation(); removeSchedAssignment(d, room, asn.id); }}
+                                        title={`Hapus ${h.name}`}
+                                        style={{ flexShrink:0, width:12, height:12, borderRadius:"50%", border:"none", background:"rgba(0,0,0,0.18)", color:"#fff", fontSize:9, lineHeight:1, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", padding:0 }}>
+                                        ×
+                                      </button>
+                                    )}
                                   </div>
                                 ))}
                                 {activeList.length===0 && schedMode==="edit" && (
@@ -3898,11 +3973,49 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                             <div style={{ fontSize:9, color:"#D97706", marginBottom:4 }}>⚠ Host ini sudah ada di ruangan ini — pastikan jam sesinya berbeda.</div>
                           )}
                           <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:2 }}>Toko</div>
-                          <div style={{ fontSize:8.5, color:PALETTE.inkFaint, marginBottom:4 }}>Toko baru? Tambah di Live Tracker → Kelola Toko Live-Only</div>
-                          <select id="scedTokoSel" style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:8 }}>
+                          <select id="scedTokoSel" style={{ width:"100%", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"5px 7px", fontSize:12, marginBottom:4 }}>
                             <option value="">— Pilih toko —</option>
                             {liveAccountOptions.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
                           </select>
+                          {isAdmin && (
+                            <div style={{ marginBottom:8 }}>
+                              {!schedSidebarShowAddToko ? (
+                                <button onClick={() => setSchedSidebarShowAddToko(true)}
+                                  style={{ fontSize:10, color:SCHED_ACCENT, background:"none", border:"none", cursor:"pointer", padding:"2px 0", textDecoration:"underline" }}>
+                                  + Tambah toko baru
+                                </button>
+                              ) : (
+                                <div style={{ background:PALETTE.panelAlt, borderRadius:8, padding:8, display:"flex", gap:6, flexWrap:"wrap", alignItems:"flex-end" }}>
+                                  <div style={{ flex:"1 1 120px" }}>
+                                    <div style={{ fontSize:9, color:PALETTE.inkSoft, marginBottom:3 }}>Nama toko</div>
+                                    <input type="text" value={schedSidebarNewToko} onChange={e=>setSchedSidebarNewToko(e.target.value)}
+                                      placeholder="contoh: Velvety" onKeyDown={e=>e.key==="Enter"&&e.preventDefault()}
+                                      style={{ width:"100%", boxSizing:"border-box", border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"4px 7px", fontSize:11 }} />
+                                  </div>
+                                  <div>
+                                    <div style={{ fontSize:9, color:PALETTE.inkSoft, marginBottom:3 }}>Platform</div>
+                                    <select value={schedSidebarNewTokoPlatform} onChange={e=>setSchedSidebarNewTokoPlatform(e.target.value)}
+                                      style={{ border:`1px solid ${PALETTE.line}`, borderRadius:6, padding:"4px 7px", fontSize:11 }}>
+                                      <option value="shopee">Shopee</option>
+                                      <option value="tiktok">TikTok Shop</option>
+                                    </select>
+                                  </div>
+                                  <button onClick={async () => {
+                                    const name = schedSidebarNewToko.trim();
+                                    if (!name) return;
+                                    await addLiveOnlyAccount(name, schedSidebarNewTokoPlatform);
+                                    setSchedSidebarNewToko(""); setSchedSidebarShowAddToko(false);
+                                  }} style={{ padding:"4px 10px", background:SCHED_ACCENT, color:"#fff", border:"none", borderRadius:6, fontSize:11, cursor:"pointer" }}>
+                                    Simpan
+                                  </button>
+                                  <button onClick={() => setSchedSidebarShowAddToko(false)}
+                                    style={{ padding:"4px 8px", border:`1px solid ${PALETTE.line}`, borderRadius:6, fontSize:11, cursor:"pointer", background:"#fff" }}>
+                                    Batal
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           {selHost && (
                             <div>
                               <div style={{ fontSize:10, color:PALETTE.inkSoft, marginBottom:6 }}>Pilih jam mulai — {selHost.sessions.length} sesi ({selHost.sessions.join("+")} jam)</div>
@@ -4222,6 +4335,71 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                 )}
               </div>
               <div className="text-[11px] mt-2" style={{ color: PALETTE.inkSoft }}>File berisi 3 sheet: Ringkasan Tahunan (target vs realisasi per akun per bulan), Detail Harian (semua transaksi termasuk breakdown sumber GMV), dan Riwayat Revisi (jejak semua perubahan data tahun tersebut).</div>
+            </Card>
+          )}
+
+          {isAdmin && (
+            <Card>
+              <SectionTitle eyebrow="Hanya admin" title="Kelola Pengguna" right={
+                <button onClick={loadDynUsers} disabled={userMgmtLoading} className="text-xs px-3 py-1.5 rounded-lg border flex items-center gap-1.5"
+                  style={{ borderColor: PALETTE.line, color: PALETTE.inkSoft }}>
+                  {userMgmtLoading ? <><Loader2 size={12} className="animate-spin"/>Memuat…</> : "Muat Daftar"}
+                </button>
+              } />
+              <div className="text-xs mb-4" style={{ color: PALETTE.inkSoft }}>
+                Buat pengguna baru yang bisa login ke GMV Tracker. Admin tetap login setelah membuat pengguna baru — tidak perlu sign out. Untuk ganti password pengguna lain, minta mereka klik tombol <b>"Ubah Kata Sandi"</b> di pojok kanan atas setelah login.
+              </div>
+
+              {/* Form buat pengguna baru */}
+              <div className="p-4 rounded-xl mb-4" style={{ background: PALETTE.panelAlt }}>
+                <div className="text-xs font-semibold mb-3" style={{ color: PALETTE.brand }}>+ Buat Pengguna Baru</div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  {[["Username (untuk login)", "username", "text", "contoh: maya"], ["Nama tampilan", "label", "text", "contoh: Maya Cosmetic"], ["Email (Firebase Auth)", "email", "email", "contoh: maya@brand.com"], ["Password", "password", "password", "min. 6 karakter"]].map(([label, field, type, ph]) => (
+                    <div key={field}>
+                      <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>{label}</label>
+                      <input type={type} value={newUserForm[field]} onChange={e => setNewUserForm(prev => ({ ...prev, [field]: e.target.value }))}
+                        placeholder={ph} className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: PALETTE.line }} />
+                    </div>
+                  ))}
+                </div>
+                <div className="mb-3">
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Peran / Akun yang dikelola</label>
+                  <select value={newUserForm.accountId} onChange={e => setNewUserForm(prev => ({ ...prev, accountId: e.target.value }))}
+                    className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: PALETTE.line }}>
+                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.id})</option>)}
+                    <option value="admin">Admin (akses penuh)</option>
+                  </select>
+                  <div className="text-[10px] mt-1" style={{ color: PALETTE.inkFaint }}>
+                    Pengguna dengan peran toko hanya bisa input data untuk toko tersebut. Admin bisa akses semua data.
+                  </div>
+                </div>
+                <button onClick={createDynUser} disabled={saving} className={`${btnClass} flex items-center gap-1.5`}
+                  style={btnPrimaryStyle(PALETTE.brand, PALETTE.brandDeep)}>
+                  {saving ? <><Loader2 size={14} className="animate-spin"/>Membuat…</> : <><PlusCircle size={14}/>Buat Pengguna</>}
+                </button>
+              </div>
+
+              {/* Daftar pengguna dinamis */}
+              {userMgmtLoaded && (
+                dynUsers.length === 0 ? (
+                  <div className="text-sm py-2" style={{ color: PALETTE.inkFaint }}>Belum ada pengguna yang dibuat lewat panel ini.</div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-[10px] uppercase tracking-wide mb-2" style={{ color: PALETTE.inkSoft }}>Pengguna yang sudah dibuat ({dynUsers.length})</div>
+                    {dynUsers.map(u => (
+                      <div key={u.username} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{ background: PALETTE.panelAlt }}>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-semibold">{u.username}</div>
+                          <div className="text-xs" style={{ color: PALETTE.inkSoft }}>{u.label || u.email} · peran: <b>{u.accountId}</b></div>
+                        </div>
+                        <button onClick={() => deleteDynUser(u.username)} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.coral }}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
             </Card>
           )}
 
