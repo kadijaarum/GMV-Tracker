@@ -185,9 +185,9 @@ export async function createFirebaseAuthUser(email, password) {
   return data.localId; // UID user baru
 }
 
-export async function saveUserRole(uid, accountId) {
+export async function saveUserRole(uid, accountId, permissions) {
   const ref = doc(db, "userRoles", uid);
-  await setDoc(ref, sanitize({ accountId }));
+  await setDoc(ref, sanitize({ accountId, permissions: permissions || {} }));
 }
 
 export async function fetchUserMappings() {
@@ -228,5 +228,9 @@ export async function fetchMyRole(uid) {
   const ref = doc(db, "userRoles", uid);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
-  return snap.data().accountId || null;
+  const d = snap.data();
+  // Return { accountId, permissions } — backward compat: kalau dokumen lama hanya punya
+  // accountId (string format), bungkus jadi object baru.
+  if (typeof d === "string") return { accountId: d, permissions: {} };
+  return { accountId: d.accountId || null, permissions: d.permissions || {} };
 }

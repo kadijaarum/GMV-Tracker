@@ -832,7 +832,15 @@ function parsePasteData(text, accounts) {
 /* ============================================================
    MAIN APP
    ============================================================ */
-export default function GMVDashboard({ myAccountId = "admin" }) {
+export default function GMVDashboard({ myAccountId = "admin", userPermissions = null }) {
+  // Efektif permissions — kalau tidak ada (user lama), fallback ke admin/store logic
+  const perm = userPermissions || {
+    editGmv: myAccountId === "admin" || ["tt1","tt2","tt3","tt4","tt5","tt6","shopee"].includes(myAccountId),
+    editLive: myAccountId === "admin" || ["tt1","tt2","tt3","tt4","tt5","tt6","shopee"].includes(myAccountId),
+    isAdmin: myAccountId === "admin",
+  };
+  const canEditGmv  = perm.editGmv  ?? true;
+  const canEditLive = perm.editLive ?? true;
   const isAdmin = myAccountId === "admin";
   const [loading, setLoading] = useState(true);
   const [storageOk, setStorageOk] = useState(true);
@@ -896,7 +904,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   // User management state (admin only)
   const [dynUsers, setDynUsers] = useState([]); // dynamic users dari Firestore userMappings
-  const [newUserForm, setNewUserForm] = useState({ username:"", email:"", password:"", accountId:"tt1", label:"" });
+  const [newUserForm, setNewUserForm] = useState({ username:"", email:"", password:"", accountId:"custom", label:"", editGmv:false, editLive:true });
   const [userMgmtLoading, setUserMgmtLoading] = useState(false);
   const [userMgmtLoaded, setUserMgmtLoaded] = useState(false);
   const [liveSavedFlash, setLiveSavedFlash] = useState(false);
@@ -2051,7 +2059,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
 
   const createDynUser = async () => {
     if (!isAdmin) return;
-    const { username, email, password, accountId, label } = newUserForm;
+    const { username, email, password, accountId, label, editGmv, editLive } = newUserForm;
     if (!username.trim() || !email.trim() || !password.trim()) {
       showToast("error", "Username, email, dan password wajib diisi."); return;
     }
@@ -2061,15 +2069,18 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
     }
     setSaving(true);
     try {
-      // 1. Buat Firebase Auth user (tidak sign out admin)
       const uid = await createFirebaseAuthUser(email.trim(), password);
-      // 2. Set userRoles di Firestore
-      await saveUserRole(uid, accountId || "tt1");
-      // 3. Simpan mapping username di Firestore
-      const mapping = { email: email.trim(), label: label.trim() || username.trim(), accountId: accountId || "tt1", uid, createdAt: Date.now() };
+      const permissions = { editGmv: !!editGmv, editLive: !!editLive };
+      // accountId "custom" berarti tidak terikat toko manapun tapi punya permissions spesifik
+      const finalAccountId = accountId === "custom" ? "custom" : accountId;
+      await saveUserRole(uid, finalAccountId, permissions);
+      const mapping = {
+        email: email.trim(), label: label.trim() || username.trim(),
+        accountId: finalAccountId, permissions, uid, createdAt: Date.now()
+      };
       await saveUserMapping(username.trim().toLowerCase(), mapping);
       setDynUsers(prev => [...prev, { username: username.trim().toLowerCase(), ...mapping }]);
-      setNewUserForm({ username:"", email:"", password:"", accountId:"tt1", label:"" });
+      setNewUserForm({ username:"", email:"", password:"", accountId:"custom", label:"", editGmv:false, editLive:true });
       setSaving(false);
       showToast("success", `Pengguna "${username}" berhasil dibuat!`);
     } catch (e) {
@@ -2934,8 +2945,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                   );
                 })}
               </div>
-              <button onClick={saveDraft} disabled={saving} className={`mt-4 ${btnClass} flex items-center gap-1.5`} style={{ ...btnPrimaryStyle(PALETTE.brand, PALETTE.brandDeep), opacity: saving ? 0.7 : 1, cursor: saving ? "wait" : "pointer" }}>
+              <button onClick={saveDraft} disabled={saving || !canEditGmv} className={`mt-4 ${btnClass} flex items-center gap-1.5`}
+                style={{ ...btnPrimaryStyle(canEditGmv ? PALETTE.brand : PALETTE.inkSoft, canEditGmv ? PALETTE.brandDeep : PALETTE.inkSoft), opacity: saving || !canEditGmv ? 0.5 : 1, cursor: saving || !canEditGmv ? "not-allowed" : "pointer" }}
+                title={!canEditGmv ? "Kamu tidak memiliki izin untuk mengedit data GMV." : undefined}>
                 {saving && <Loader2 size={14} className="animate-spin" />}{saving ? "Menyimpan…" : `Simpan Data ${inputDate}`}
+                {!canEditGmv && <span style={{ fontSize:11 }}>(akses terbatas)</span>}
               </button>
             </Card>
           )}
@@ -3422,8 +3436,11 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
             </div>
             <div className="text-[11px] mb-3" style={{ color: PALETTE.inkFaint }}>CO%, CTR%, dan GPM diisi langsung dari angka yang tampil di TikTok Shop/Shopee Live Analytics — tidak dihitung otomatis oleh sistem karena butuh data impression/klik yang tidak tercatat di sini.</div>
 
-            <button onClick={saveLiveSessionEntry} disabled={saving} className={`${btnClass} flex items-center gap-1.5`} style={{ background: `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})`, color: "#fff", boxShadow: glow(LIVE_ACCENT, 0.3), opacity: saving ? 0.7 : 1 }}>
+            <button onClick={saveLiveSessionEntry} disabled={saving || !canEditLive} className={`${btnClass} flex items-center gap-1.5`}
+              style={{ background: canEditLive ? `linear-gradient(135deg, ${LIVE_ACCENT}, ${LIVE_ACCENT_DEEP})` : PALETTE.inkSoft, color: "#fff", boxShadow: canEditLive ? glow(LIVE_ACCENT, 0.3) : "none", opacity: saving || !canEditLive ? 0.5 : 1, cursor: !canEditLive ? "not-allowed" : "default" }}
+              title={!canEditLive ? "Kamu tidak memiliki izin untuk mengedit Live Tracker." : undefined}>
               {saving && <Loader2 size={14} className="animate-spin" />}{saving ? "Menyimpan…" : "Simpan Sesi Live"}<Radio size={14} />
+              {!canEditLive && <span style={{ fontSize:11 }}>(akses terbatas)</span>}
             </button>
           </Card>
 
@@ -4359,14 +4376,25 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                   ))}
                 </div>
                 <div className="mb-3">
-                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: PALETTE.inkSoft }}>Peran / Akun yang dikelola</label>
-                  <select value={newUserForm.accountId} onChange={e => setNewUserForm(prev => ({ ...prev, accountId: e.target.value }))}
-                    className="text-sm px-2.5 py-1.5 rounded border outline-none w-full" style={{ borderColor: PALETTE.line }}>
-                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.id})</option>)}
-                    <option value="admin">Admin (akses penuh)</option>
-                  </select>
-                  <div className="text-[10px] mt-1" style={{ color: PALETTE.inkFaint }}>
-                    Pengguna dengan peran toko hanya bisa input data untuk toko tersebut. Admin bisa akses semua data.
+                  <label className="text-[10px] uppercase tracking-wide block mb-2" style={{ color: PALETTE.inkSoft }}>Akses yang diizinkan</label>
+                  <div className="p-3 rounded-lg space-y-2" style={{ background: PALETTE.bg || "#f8f7ff", border: `1px solid ${PALETTE.line}` }}>
+                    {[
+                      ["editGmv", "Edit Input Data GMV", "Bisa mengisi dan menyimpan data penjualan harian (tab Input Data)"],
+                      ["editLive", "Edit Live Tracker", "Bisa menambah dan mengedit sesi live (tab Live Tracker)"],
+                    ].map(([field, label, desc]) => (
+                      <label key={field} style={{ display:"flex", alignItems:"flex-start", gap:8, cursor:"pointer" }}>
+                        <input type="checkbox" checked={!!newUserForm[field]}
+                          onChange={e => setNewUserForm(prev => ({ ...prev, [field]: e.target.checked }))}
+                          style={{ marginTop:2, accentColor: PALETTE.brand, cursor:"pointer" }} />
+                        <div>
+                          <div className="text-sm font-medium">{label}</div>
+                          <div className="text-[11px]" style={{ color: PALETTE.inkSoft }}>{desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-[10px] mt-2" style={{ color: PALETTE.inkFaint }}>
+                    Tab Ringkasan, Sumber GMV, Performa Iklan, dan Jadwal dapat dilihat oleh semua pengguna. Tab Target & Akun hanya untuk admin.
                   </div>
                 </div>
                 <button onClick={createDynUser} disabled={saving} className={`${btnClass} flex items-center gap-1.5`}
@@ -4386,7 +4414,9 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
                       <div key={u.username} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{ background: PALETTE.panelAlt }}>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm font-semibold">{u.username}</div>
-                          <div className="text-xs" style={{ color: PALETTE.inkSoft }}>{u.label || u.email} · peran: <b>{u.accountId}</b></div>
+                          <div className="text-xs" style={{ color: PALETTE.inkSoft }}>
+                            {u.label || u.email} · izin: {[u.permissions?.editGmv && "Input GMV", u.permissions?.editLive && "Live Tracker"].filter(Boolean).join(", ") || "view only"}
+                          </div>
                         </div>
                         <button onClick={() => deleteDynUser(u.username)} className="p-1 rounded hover:opacity-70" style={{ color: PALETTE.coral }}>
                           <Trash2 size={14} />

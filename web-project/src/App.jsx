@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import {
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut,
+  updatePassword, EmailAuthProvider, reauthenticateWithCredential
+} from "firebase/auth";
 import { app } from "./firebaseConfig.js";
 import installStorageAdapter, { fetchMyRole, fetchUserMapping } from "./storageAdapter.js";
 import GMVDashboard from "./GMVDashboard.jsx";
 
 installStorageAdapter();
-
 const auth = getAuth(app);
 
-// Hardcoded login lama (backward compatibility)
+// Hardcoded login lama (backward compatibility) — user baru dibuat lewat admin panel
 const STORE_LOGINS = {
   pretty:  { email: "pretty@cosmetic.com",  label: "Pretty Cosmetic" },
   lovie:   { email: "lovie@dovey.com",       label: "Lovie Dovey" },
@@ -20,48 +22,77 @@ const STORE_LOGINS = {
   admin:   { email: "surabaya@online.com",   label: "Admin" },
 };
 
-const ACCOUNT_ID_LABELS = {
-  tt1:"Pretty Cosmetic", tt2:"Lovie Dovey", tt3:"Flowie Cosmetic", tt4:"Our Beauty Space",
-  tt5:"Celline Cosmetic", tt6:"Kiwie Cosmetic", shopee:"Twie Beauty (Shopee)", admin:"Admin",
-};
+const STORE_ACCOUNT_IDS = ["tt1","tt2","tt3","tt4","tt5","tt6","shopee"];
+
+// Hitung efektif permissions berdasarkan accountId + optional override dari Firestore
+function resolvePermissions(accountId, rawPermissions) {
+  if (accountId === "admin") {
+    return { editGmv: true, editLive: true, editJadwal: true, editAds: true, isAdmin: true };
+  }
+  const isStoreAccount = STORE_ACCOUNT_IDS.includes(accountId);
+  // Default untuk akun toko: boleh edit GMV dan Live milik toko sendiri
+  const base = {
+    editGmv:    isStoreAccount ? true  : false,
+    editLive:   isStoreAccount ? true  : false,
+    editJadwal: false,
+    editAds:    isStoreAccount ? false : false,
+    isAdmin:    false,
+  };
+  // Override dengan permissions eksplisit dari Firestore (untuk user yang dibuat admin)
+  if (rawPermissions && typeof rawPermissions === "object") {
+    Object.entries(rawPermissions).forEach(([k, v]) => { if (k in base) base[k] = !!v; });
+  }
+  return base;
+}
 
 export default function App() {
-  const [user, setUser] = useState(undefined);
+  const [user, setUser]             = useState(undefined);
   const [myAccountId, setMyAccountId] = useState(null);
-  const [roleError, setRoleError] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loggingIn, setLoggingIn] = useState(false);
-  const [userLabel, setUserLabel] = useState("");
+  const [myPermissions, setMyPermissions] = useState(null);
+  const [userLabel, setUserLabel]   = useState("");
+  const [roleError, setRoleError]   = useState("");
 
-  // Ubah kata sandi
+  const [username, setUsername]     = useState("");
+  const [password, setPassword]     = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn]   = useState(false);
+
   const [showChangePwd, setShowChangePwd] = useState(false);
-  const [oldPwd, setOldPwd] = useState("");
+  const [oldPwd, setOldPwd]   = useState("");
   const [newPwd1, setNewPwd1] = useState("");
   const [newPwd2, setNewPwd2] = useState("");
-  const [pwdError, setPwdError] = useState("");
-  const [pwdSuccess, setPwdSuccess] = useState("");
+  const [pwdMsg, setPwdMsg]   = useState({ text:"", ok:false });
   const [changingPwd, setChangingPwd] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
-      setRoleError(""); setMyAccountId(null); setUserLabel("");
-      if (u) {
-        try {
-          const role = await fetchMyRole(u.uid);
-          if (!role) {
-            setRoleError("Login berhasil tapi peran belum diset di Firestore (userRoles). Hubungi admin.");
-            await signOut(auth);
-          } else {
-            setMyAccountId(role);
-            setUserLabel(ACCOUNT_ID_LABELS[role] || role);
-          }
-        } catch (e) {
-          setRoleError("Gagal membaca peran. Cek Firestore Rules sudah ter-publish.");
-          await signOut(auth);
+      setRoleError(""); setMyAccountId(null); setMyPermissions(null); setUserLabel("");
+      if (!u) return;
+      try {
+        const result = await fetchMyRole(u.uid);
+        if (!result || !result.accountId) {
+          setRoleError("Login berhasil tapi peran belum diset di Firestore (userRoles). Hubungi admin.");
+          await signOut(auth); return;
         }
+        const { accountId, permissions } = result;
+        const perms = resolvePermissions(accountId, permissions);
+        setMyAccountId(accountId);
+        setMyPermissions(perms);
+        // Label nama: coba dari userMappings dulu (user dinamis), fallback ke hardcoded
+        try {
+          const uname = Object.entries(STORE_LOGINS).find(([, v]) => v.email === u.email)?.[0];
+          if (uname) {
+            setUserLabel(STORE_LOGINS[uname].label);
+          } else {
+            // User dinamis — ambil label dari userMappings
+            const mapping = await fetchUserMapping(u.email.split("@")[0]);
+            setUserLabel(mapping?.label || accountId);
+          }
+        } catch { setUserLabel(accountId); }
+      } catch (e) {
+        setRoleError("Gagal membaca peran. Cek Firestore Rules sudah ter-publish.");
+        await signOut(auth);
       }
     });
     return unsub;
@@ -69,73 +100,67 @@ export default function App() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    setError(""); setLoggingIn(true);
+    setLoginError(""); setLoggingIn(true);
     const uname = username.trim().toLowerCase();
-
-    // 1. Cek hardcoded STORE_LOGINS
     let entry = STORE_LOGINS[uname];
-
-    // 2. Cek Firestore userMappings (user yang dibuat lewat admin panel)
     if (!entry) {
       try {
         const mapping = await fetchUserMapping(uname);
         if (mapping) entry = { email: mapping.email, label: mapping.label || uname };
       } catch {}
     }
-
-    if (!entry) {
-      setError(`Username "${username}" tidak dikenali.`);
-      setLoggingIn(false); return;
-    }
+    if (!entry) { setLoginError(`Username "${username}" tidak dikenali.`); setLoggingIn(false); return; }
     try {
       await signInWithEmailAndPassword(auth, entry.email, password);
     } catch (err) {
-      const code = err.code || "";
-      setError(`Login gagal — ${code === "auth/too-many-requests" ? "Terlalu banyak percobaan, tunggu beberapa menit." : code === "auth/invalid-credential" || code === "auth/wrong-password" ? "Password salah." : code === "auth/user-not-found" ? "User tidak ditemukan." : "Detail: " + (err.message || code)}`);
+      const c = err.code || "";
+      setLoginError(`Login gagal — ${c === "auth/too-many-requests" ? "Terlalu banyak percobaan, tunggu beberapa menit." : c === "auth/invalid-credential" || c === "auth/wrong-password" ? "Password salah." : "Detail: " + (err.message || c)}`);
     }
     setLoggingIn(false);
   };
 
   const handleChangePwd = async (e) => {
     e.preventDefault();
-    setPwdError(""); setPwdSuccess(""); setChangingPwd(true);
-    if (newPwd1 !== newPwd2) { setPwdError("Konfirmasi kata sandi tidak cocok."); setChangingPwd(false); return; }
-    if (newPwd1.length < 6) { setPwdError("Kata sandi baru minimal 6 karakter."); setChangingPwd(false); return; }
+    setPwdMsg({ text:"", ok:false }); setChangingPwd(true);
+    if (newPwd1 !== newPwd2) { setPwdMsg({ text:"Konfirmasi tidak cocok.", ok:false }); setChangingPwd(false); return; }
+    if (newPwd1.length < 6)  { setPwdMsg({ text:"Password baru minimal 6 karakter.", ok:false }); setChangingPwd(false); return; }
     try {
-      // Re-autentikasi dulu (diperlukan Firebase untuk operasi sensitif)
-      const cred = EmailAuthProvider.credential(user.email, oldPwd);
-      await reauthenticateWithCredential(user, cred);
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, oldPwd));
       await updatePassword(user, newPwd1);
-      setPwdSuccess("Kata sandi berhasil diubah!");
+      setPwdMsg({ text:"Kata sandi berhasil diubah!", ok:true });
       setOldPwd(""); setNewPwd1(""); setNewPwd2("");
-      setTimeout(() => { setShowChangePwd(false); setPwdSuccess(""); }, 2000);
+      setTimeout(() => { setShowChangePwd(false); setPwdMsg({ text:"", ok:false }); }, 2000);
     } catch (err) {
-      const code = err.code || "";
-      setPwdError(code === "auth/wrong-password" || code === "auth/invalid-credential" ? "Kata sandi lama salah." : code === "auth/too-many-requests" ? "Terlalu banyak percobaan." : `Gagal: ${err.message || code}`);
+      const c = err.code || "";
+      setPwdMsg({ text: c === "auth/wrong-password" || c === "auth/invalid-credential" ? "Kata sandi lama salah." : c === "auth/too-many-requests" ? "Terlalu banyak percobaan." : `Gagal: ${err.message || c}`, ok:false });
     }
     setChangingPwd(false);
   };
 
+  const INK = "#1A1523", SOFT = "#6B6478", BORDER = "#E8E1F5";
+
   if (user === undefined) return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", fontFamily:"sans-serif", color:"#75716A" }}>Memuat…</div>
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", color:SOFT }}>Memuat…</div>
   );
 
-  if (!user || !myAccountId) return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#FAF8FF", fontFamily:"sans-serif", padding:16 }}>
+  if (!user || !myAccountId || !myPermissions) return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"#FAF8FF", padding:16 }}>
       <div style={{ width:"100%", maxWidth:360 }}>
-        <form onSubmit={handleLogin} style={{ background:"#fff", padding:32, borderRadius:14, border:"1px solid #E8E1F5", boxShadow:"0 8px 30px -8px rgba(124,58,237,0.18)" }}>
-          <h1 style={{ fontSize:18, fontWeight:800, marginBottom:4, color:"#1A1523" }}>GMV Tracker</h1>
-          <p style={{ fontSize:13, color:"#6B6478", marginBottom:18 }}>Login dengan akun toko kamu.</p>
-          <label style={{ fontSize:11, fontWeight:600, color:"#6B6478", display:"block", marginBottom:4 }}>Username</label>
-          <input type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="contoh: pretty" autoFocus
-            style={{ width:"100%", boxSizing:"border-box", padding:"9px 11px", border:"1px solid #E8E1F5", borderRadius:8, marginBottom:12, fontSize:14 }} />
-          <label style={{ fontSize:11, fontWeight:600, color:"#6B6478", display:"block", marginBottom:4 }}>Password</label>
-          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Password"
-            style={{ width:"100%", boxSizing:"border-box", padding:"9px 11px", border:"1px solid #E8E1F5", borderRadius:8, marginBottom:12, fontSize:14 }} />
-          {(error || roleError) && <div style={{ color:"#BE123C", fontSize:12, marginBottom:12, lineHeight:1.5 }}>{error || roleError}</div>}
+        <form onSubmit={handleLogin} style={{ background:"#fff", padding:32, borderRadius:14, border:`1px solid ${BORDER}`, boxShadow:"0 8px 30px -8px rgba(124,58,237,0.18)" }}>
+          <h1 style={{ fontSize:18, fontWeight:800, marginBottom:4, color:INK }}>GMV Tracker</h1>
+          <p style={{ fontSize:13, color:SOFT, marginBottom:18 }}>Login dengan akun toko kamu.</p>
+          {[["Username","text",username,setUsername,"contoh: pretty"],["Password","password",password,setPassword,"Password"]].map(([lbl,type,val,setter,ph])=>(
+            <div key={lbl}>
+              <label style={{ fontSize:11, fontWeight:600, color:SOFT, display:"block", marginBottom:4 }}>{lbl}</label>
+              <input type={type} value={val} onChange={e=>setter(e.target.value)} placeholder={ph} autoFocus={lbl==="Username"}
+                style={{ width:"100%", boxSizing:"border-box", padding:"9px 11px", border:`1px solid ${BORDER}`, borderRadius:8, marginBottom:12, fontSize:14 }} />
+            </div>
+          ))}
+          {loginError && <div style={{ color:"#BE123C", fontSize:12, marginBottom:12, lineHeight:1.5 }}>{loginError}</div>}
+          {roleError  && <div style={{ color:"#BE123C", fontSize:12, marginBottom:12, lineHeight:1.5 }}>{roleError}</div>}
           <button type="submit" disabled={loggingIn}
             style={{ width:"100%", padding:10, background:"linear-gradient(135deg,#7C3AED,#EC4899)", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:14, cursor:"pointer", opacity:loggingIn?0.7:1 }}>
-            {loggingIn ? "Masuk…" : "Masuk"}
+            {loggingIn?"Masuk…":"Masuk"}
           </button>
         </form>
       </div>
@@ -144,15 +169,15 @@ export default function App() {
 
   return (
     <div>
-      {/* Top bar */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 16px", background:"#FAF8FF", borderBottom:"1px solid #E8E1F5", gap:8, flexWrap:"wrap" }}>
-        <span style={{ fontSize:12, color:"#6B6478" }}>Login sebagai: <b style={{ color:"#1A1523" }}>{userLabel}</b></span>
+      {/* Top bar — Ubah Kata Sandi tersedia untuk SEMUA pengguna */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 16px", background:"#FAF8FF", borderBottom:`1px solid ${BORDER}`, flexWrap:"wrap", gap:8 }}>
+        <span style={{ fontSize:12, color:SOFT }}>Login sebagai: <b style={{ color:INK }}>{userLabel}</b></span>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          <button onClick={() => setShowChangePwd(true)}
-            style={{ fontSize:12, color:"#7C3AED", background:"none", border:"1px solid #E8E1F5", borderRadius:6, padding:"3px 10px", cursor:"pointer" }}>
+          <button onClick={()=>setShowChangePwd(true)}
+            style={{ fontSize:12, color:"#7C3AED", background:"none", border:`1px solid ${BORDER}`, borderRadius:6, padding:"3px 10px", cursor:"pointer" }}>
             Ubah Kata Sandi
           </button>
-          <button onClick={() => signOut(auth)} style={{ fontSize:12, color:"#6B6478", background:"none", border:"none", cursor:"pointer" }}>Keluar</button>
+          <button onClick={()=>signOut(auth)} style={{ fontSize:12, color:SOFT, background:"none", border:"none", cursor:"pointer" }}>Keluar</button>
         </div>
       </div>
 
@@ -160,32 +185,29 @@ export default function App() {
       {showChangePwd && (
         <div style={{ position:"fixed", inset:0, zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(28,21,35,0.5)", padding:16 }}>
           <form onSubmit={handleChangePwd} style={{ background:"#fff", padding:24, borderRadius:14, width:"100%", maxWidth:360, boxShadow:"0 8px 40px rgba(0,0,0,0.2)" }}>
-            <h2 style={{ fontSize:15, fontWeight:700, marginBottom:4, color:"#1A1523" }}>Ubah Kata Sandi</h2>
-            <p style={{ fontSize:12, color:"#6B6478", marginBottom:16 }}>Login sebagai: <b>{userLabel}</b></p>
-            {[["Kata sandi lama", oldPwd, setOldPwd], ["Kata sandi baru", newPwd1, setNewPwd1], ["Konfirmasi kata sandi baru", newPwd2, setNewPwd2]].map(([label, val, setter]) => (
-              <div key={label}>
-                <label style={{ fontSize:11, fontWeight:600, color:"#6B6478", display:"block", marginBottom:4 }}>{label}</label>
-                <input type="password" value={val} onChange={e=>setter(e.target.value)} placeholder={label}
-                  style={{ width:"100%", boxSizing:"border-box", padding:"9px 11px", border:"1px solid #E8E1F5", borderRadius:8, marginBottom:12, fontSize:14 }} />
+            <h2 style={{ fontSize:15, fontWeight:700, marginBottom:4, color:INK }}>Ubah Kata Sandi</h2>
+            <p style={{ fontSize:12, color:SOFT, marginBottom:16 }}>Login sebagai: <b>{userLabel}</b></p>
+            {[["Kata sandi lama",oldPwd,setOldPwd],["Kata sandi baru (min. 6 karakter)",newPwd1,setNewPwd1],["Konfirmasi kata sandi baru",newPwd2,setNewPwd2]].map(([lbl,val,setter])=>(
+              <div key={lbl}>
+                <label style={{ fontSize:11, fontWeight:600, color:SOFT, display:"block", marginBottom:4 }}>{lbl}</label>
+                <input type="password" value={val} onChange={e=>setter(e.target.value)} placeholder={lbl}
+                  style={{ width:"100%", boxSizing:"border-box", padding:"9px 11px", border:`1px solid ${BORDER}`, borderRadius:8, marginBottom:12, fontSize:14 }} />
               </div>
             ))}
-            {pwdError && <div style={{ color:"#BE123C", fontSize:12, marginBottom:10 }}>{pwdError}</div>}
-            {pwdSuccess && <div style={{ color:"#1baf7a", fontSize:12, marginBottom:10 }}>{pwdSuccess}</div>}
+            {pwdMsg.text && <div style={{ color:pwdMsg.ok?"#1baf7a":"#BE123C", fontSize:12, marginBottom:10 }}>{pwdMsg.text}</div>}
             <div style={{ display:"flex", gap:8 }}>
-              <button type="button" onClick={() => { setShowChangePwd(false); setPwdError(""); setOldPwd(""); setNewPwd1(""); setNewPwd2(""); }}
-                style={{ flex:1, padding:10, border:"1px solid #E8E1F5", borderRadius:8, fontSize:13, cursor:"pointer", background:"#fff", color:"#6B6478" }}>
-                Batal
-              </button>
+              <button type="button" onClick={()=>{setShowChangePwd(false);setPwdMsg({text:"",ok:false});setOldPwd("");setNewPwd1("");setNewPwd2("");}}
+                style={{ flex:1, padding:10, border:`1px solid ${BORDER}`, borderRadius:8, fontSize:13, cursor:"pointer", background:"#fff", color:SOFT }}>Batal</button>
               <button type="submit" disabled={changingPwd}
                 style={{ flex:2, padding:10, background:"linear-gradient(135deg,#7C3AED,#EC4899)", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:14, cursor:"pointer", opacity:changingPwd?0.7:1 }}>
-                {changingPwd ? "Menyimpan…" : "Simpan Kata Sandi"}
+                {changingPwd?"Menyimpan…":"Simpan Kata Sandi"}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      <GMVDashboard myAccountId={myAccountId} />
+      <GMVDashboard myAccountId={myAccountId} userPermissions={myPermissions} />
     </div>
   );
 }
