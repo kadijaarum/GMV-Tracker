@@ -10,7 +10,7 @@ import {
   Radio, Eye, Clock,
 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord, fetchAllLiveSessions, saveLiveSession, deleteLiveSession, createFirebaseAuthUser, fetchUserMappings, saveUserMapping, deleteUserMapping } from "./storageAdapter.js";
+import { fetchAllEntries, saveEntryDay, deleteEntryDay, fetchAllTargets, saveTargetMonth, fetchAllRevisions, addRevisionRecord, fetchAllLiveSessions, saveLiveSession, deleteLiveSession, createFirebaseAuthUser, fetchUserMappings, saveUserMapping, deleteUserMapping, saveUserRole } from "./storageAdapter.js";
 
 /* ============================================================
    TOKENS — palet & tipografi
@@ -2064,11 +2064,7 @@ export default function GMVDashboard({ myAccountId = "admin" }) {
       // 1. Buat Firebase Auth user (tidak sign out admin)
       const uid = await createFirebaseAuthUser(email.trim(), password);
       // 2. Set userRoles di Firestore
-      await window.storage.set(`userRole_${uid}`, null); // placeholder, pakai set ke userRoles langsung
-      // Simpan userRoles via setDoc (admin bisa menulis karena rules)
-      const { db } = await import("./storageAdapter.js");
-      const { doc, setDoc } = await import("firebase/firestore");
-      await setDoc(doc(db, "userRoles", uid), { accountId: accountId || "tt1" });
+      await saveUserRole(uid, accountId || "tt1");
       // 3. Simpan mapping username di Firestore
       const mapping = { email: email.trim(), label: label.trim() || username.trim(), accountId: accountId || "tt1", uid, createdAt: Date.now() };
       await saveUserMapping(username.trim().toLowerCase(), mapping);

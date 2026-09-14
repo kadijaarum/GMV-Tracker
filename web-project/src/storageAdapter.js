@@ -169,8 +169,6 @@ export async function deleteLiveSession(accountId, sessionId) {
    (tidak sign out current admin session).
    ============================================================ */
 
-import { firebaseConfig } from "./firebaseConfig.js";
-
 export async function createFirebaseAuthUser(email, password) {
   // REST API: membuat Firebase Auth user TANPA mengubah sesi login yang sedang aktif.
   // Admin tetap login sebagai dirinya sendiri setelah memanggil ini.
@@ -185,6 +183,11 @@ export async function createFirebaseAuthUser(email, password) {
   const data = await resp.json();
   if (data.error) throw new Error(data.error.message || "Gagal membuat user Firebase");
   return data.localId; // UID user baru
+}
+
+export async function saveUserRole(uid, accountId) {
+  const ref = doc(db, "userRoles", uid);
+  await setDoc(ref, sanitize({ accountId }));
 }
 
 export async function fetchUserMappings() {
