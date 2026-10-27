@@ -218,7 +218,18 @@ const SCHED_WEEK_KEY_PREFIX = "gmv-dashboard-sched-week-"; // Per-week storage: 
 const getSchedWk = (wk) => `${SCHED_WEEK_KEY_PREFIX}${wk}`;
 const HOST_NAMES_KEY = "gmv-dashboard-host-names-v1"; // daftar nama host bersama Live Tracker + Jadwal
 const DEFAULT_HOST_NAMES = ["Ivonne","Fifi","Gita","Citra","Ana","Bella","Rena","Sherly","Winda"];
-const SCHEDULE_ROOMS = ["Ruang 1A", "Ruang 1B", "Ruang 2", "Ruang 3"];
+// SCHEDULE_ROOMS = KUNCI penyimpanan data di Firestore (jangan diubah, nanti jadwal lama tidak terbaca).
+// Nama yang tampil di layar diatur lewat SCHEDULE_ROOM_LABELS.
+const SCHEDULE_ROOMS = ["Ruang 1A", "Ruang 1B", "Ruang 2", "Ruang 3", "Ruang 4", "Ruang 5"];
+const SCHEDULE_ROOM_LABELS = {
+  "Ruang 1A": "Lovie Dovey",
+  "Ruang 1B": "Celline Beauty",
+  "Ruang 2":  "Flowie Cosmetic",
+  "Ruang 3":  "OBS Star/Pompurin",
+  "Ruang 4":  "Pretty Cosmetic",
+  "Ruang 5":  "Our & Kiwie",
+};
+const roomLabel = (room) => SCHEDULE_ROOM_LABELS[room] || room;
 const SCHED_ACCENT = "#1D9E75"; // hijau — beda dari Live Tracker (rose) dan GMV brand (violet)
 const SCHED_SOFT   = "#E1F5EE";
 const SCHED_DEEP   = "#14532D";
@@ -3783,7 +3794,7 @@ export default function GMVDashboard({ myAccountId = "admin", userPermissions = 
             {!schedRecapView && (
               <Card>
                 <div style={{ maxHeight: "75vh", overflowY: "auto", overflowX: "auto", position: "relative" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: `88px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(75px,1fr))`, minWidth: 980 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `88px repeat(${7 * SCHEDULE_ROOMS.length}, minmax(80px,1fr))`, minWidth: 980 }}>
                     {/* corner — sticky kiri DAN atas */}
                     <div style={{ gridRow:"1/3", padding:"4px 2px", fontSize:9, color:PALETTE.inkSoft, textAlign:"center", borderRight:`2px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, display:"flex", alignItems:"center", justifyContent:"center", background:PALETTE.panelAlt, position:"sticky", left:0, top:0, zIndex:40 }}>Jam</div>
                     {/* day headers — sticky atas, border kiri tebal sebagai pemisah antar hari */}
@@ -3812,11 +3823,11 @@ export default function GMVDashboard({ myAccountId = "admin", userPermissions = 
                         </div>
                       );
                     })}
-                    {/* room sub-headers — sticky top:44px, border kiri tebal untuk kolom R1A tiap hari */}
+                    {/* room sub-headers — sticky top:44px, border kiri tebal untuk kolom pertama (Lovie Dovey) tiap hari */}
                     {schedWeekDays.map((d, di) =>
                       SCHEDULE_ROOMS.map((room, ri) => (
-                        <div key={`rh-${di}-${ri}`} style={{ fontSize:9, padding:"3px 2px", textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft: ri===0 ? `2px solid ${PALETTE.line}` : "none", background:PALETTE.panelAlt, position:"sticky", top:44, zIndex:25, height:24, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                          {room.replace("Ruang ","R")}
+                        <div key={`rh-${di}-${ri}`} style={{ fontSize:9, padding:"3px 2px", textAlign:"center", color:PALETTE.inkSoft, borderRight:`1px solid ${PALETTE.line}`, borderBottom:`1px solid ${PALETTE.line}`, borderLeft: ri===0 ? `2px solid ${PALETTE.line}` : "none", background:PALETTE.panelAlt, position:"sticky", top:44, zIndex:25, height:32, display:"flex", alignItems:"center", justifyContent:"center", fontWeight:600, lineHeight:1.15, wordBreak:"break-word" }} title={roomLabel(room)}>
+                          {roomLabel(room)}
                         </div>
                       ))
                     )}
@@ -3886,7 +3897,7 @@ export default function GMVDashboard({ myAccountId = "admin", userPermissions = 
                   return (
                     <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(28,21,35,0.45)" }}>
                       <div style={{ background:PALETTE.panel, border:`1px solid ${PALETTE.line}`, borderRadius:12, padding:20, width:"min(96vw,440px)", maxHeight:"90vh", overflowY:"auto" }}>
-                        <h3 style={{ fontSize:13, fontWeight:700, marginBottom:2 }}>{SCHED_DAYS_SHORT[date.getDay()]} {date.getDate()}/{date.getMonth()+1} — {room}</h3>
+                        <h3 style={{ fontSize:13, fontWeight:700, marginBottom:2 }}>{SCHED_DAYS_SHORT[date.getDay()]} {date.getDate()}/{date.getMonth()+1} — {roomLabel(room)}</h3>
                         <div style={{ fontSize:11, color:PALETTE.inkSoft, marginBottom:12 }}>Satu ruangan bisa diisi beberapa host di jam berbeda</div>
 
                         {/* daftar yang sudah ada */}
